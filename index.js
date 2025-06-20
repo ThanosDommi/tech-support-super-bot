@@ -5,6 +5,21 @@ const schedule = require('node-schedule');
 require('dotenv').config();
 
 const app = express();
+app.post('/slack/events', express.json(), (req, res) => {
+  const { type, challenge, event } = req.body;
+
+  if (type === 'url_verification') {
+    return res.status(200).send(challenge);
+  }
+
+  if (type === 'event_callback') {
+    console.log('Slack event:', event);
+    // You can add your actual Slack logic here
+  }
+
+  res.status(200).end();
+});
+
 const port = process.env.PORT || 3000;
 app.use(bodyParser.json());
 
