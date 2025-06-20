@@ -70,10 +70,9 @@ function postShiftMessage(slot) {
   replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
 }
 
-// --- Slack Event Handler ---
+// --- Slack Events Handler ---
 app.post('/slack/events', (req, res) => {
   console.log('🔔 Incoming Slack event:', req.body);
-
   const { type, challenge, event } = req.body;
 
   if (type === 'url_verification') {
@@ -82,28 +81,30 @@ app.post('/slack/events', (req, res) => {
 
   if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
-    console.log(`🔵 Mentioned by user: ${userId}`);
-
-    const text = event.text.toLowerCase();
+    const channelId = event.channel;
     const now = Date.now();
+
+    console.log(`🔵 Mentioned by user: ${userId}`);
 
     if (!breaks[userId]) breaks[userId] = { start: 0 };
     const lastBreak = breaks[userId].start;
     const timeSince = now - lastBreak;
-    const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
+    const someoneElse = Object.entries(breaks).some(
+      ([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000
+    );
 
     if (timeSince < 30 * 60 * 1000) {
-      return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
+      return replyToSlack(channelId, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
         .then(() => res.status(200).end());
     }
 
     if (someoneElse) {
-      return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
+      return replyToSlack(channelId, '❌ Someone else is on break. Please try again later.')
         .then(() => res.status(200).end());
     }
 
     breaks[userId].start = now;
-    return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
+    return replyToSlack(channelId, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
       .then(() => res.status(200).end());
   }
 
@@ -121,7 +122,8 @@ app.get('/', (req, res) => {
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
 });
 
-// ✅ Listen LAST
+// --- Start the App ---
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
+
