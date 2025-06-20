@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -6,56 +5,11 @@ const schedule = require('node-schedule');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
-// Enable JSON parsing
 app.use(bodyParser.json());
 
-// --- Global Memory ---
 const breaks = {};
-
-// --- Slack Event Handler ---
-app.post('/slack/events', (req, res) => {
-  const { type, challenge, event } = req.body;
-
-  // ✅ Slack URL verification
-  if (type === 'url_verification') {
-    return res.status(200).send(challenge);
-  }
-
-  // ✅ Handle app mentions (e.g., break requests)
-  if (type === 'event_callback' && event && event.type === 'app_mention') {
-    const userId = event.user;
-    const text = event.text.toLowerCase();
-    const now = Date.now();
-
-    if (text.includes('break')) {
-      if (!breaks[userId]) breaks[userId] = { start: 0 };
-      const timeSince = now - breaks[userId].start;
-      const someoneElse = Object.entries(breaks).some(
-        ([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000
-      );
-
-      if (timeSince < 30 * 60 * 1000) {
-        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
-          .then(() => res.status(200).end());
-      }
-
-      if (someoneElse) {
-        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
-          .then(() => res.status(200).end());
-      }
-
-      breaks[userId].start = now;
-      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
-        .then(() => res.status(200).end());
-    }
-  }
-
-  res.status(200).end();
-});
-
-// --- Shift Setup ---
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
   '06:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
@@ -66,13 +20,13 @@ const fixedShifts = {
 };
 
 const dailyThemes = {
-  Sunday:    { chat: '🌙', ticket: '💤' },
-  Monday:    { chat: '🌞', ticket: '📩' },
-  Tuesday:   { chat: '🪓', ticket: '🛡️' },
+  Sunday: { chat: '🌙', ticket: '💤' },
+  Monday: { chat: '🌞', ticket: '📩' },
+  Tuesday: { chat: '🪓', ticket: '🛡️' },
   Wednesday: { chat: '🧬', ticket: '🔬' },
-  Thursday:  { chat: '🍃', ticket: '🌻' },
-  Friday:    { chat: '🔥', ticket: '💼' },
-  Saturday:  { chat: '❄️', ticket: '🧊' }
+  Thursday: { chat: '🍃', ticket: '🌻' },
+  Friday: { chat: '🔥', ticket: '💼' },
+  Saturday: { chat: '❄️', ticket: '🧊' }
 };
 
 function getTodayTheme() {
@@ -91,7 +45,6 @@ function formatShiftMessage(slot, chatAgents, ticketAgents) {
   const nowIL = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
   const hour = new Date(nowIL).getHours();
   const greeting = getGreeting(hour);
-
   return `🕒 ${greeting}\n\n${theme.chat} Chat Agents: ${chatAgents.join(', ')}\n${theme.ticket} Ticket Agents: ${ticketAgents.join(', ')}\n`;
 }
 
@@ -114,18 +67,61 @@ function postShiftMessage(slot) {
   replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
 }
 
-// --- Scheduler ---
+// 🧠 Slack Events Handler
+app.post('/slack/events', (req, res) => {
+  const { type, challenge, event } = req.body;
+
+  // Step 1: Slack verification
+  if (type === 'url_verification') {
+    return res.status(200).send(challenge);
+  }
+
+  // Step 2: Break logic
+  if (type === 'event_callback' && event && event.type === 'app_mention') {
+    const userId = event.user;
+    const text = event.text.toLowerCase();
+    const now = Date.now();
+
+    if (text.includes('break')) {
+      if (!breaks[userId]) breaks[userId] = { start: 0 };
+
+      const lastBreak = breaks[userId].start;
+      const timeSince = now - lastBreak;
+      const someoneElseOnBreak = Object.entries(breaks).some(
+        ([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000
+      );
+
+      if (timeSince < 30 * 60 * 1000) {
+        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
+          .then(() => res.status(200).end());
+      }
+
+      if (someoneElseOnBreak) {
+        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
+          .then(() => res.status(200).end());
+      }
+
+      breaks[userId].start = now;
+      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
+        .then(() => res.status(200).end());
+    }
+  }
+
+  res.status(200).end();
+});
+
+// 🕒 Schedule automatic shift messages
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
 });
 
-// --- Health Check Route ---
+// ✅ Health check
 app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
-// --- Start Server ---
+// ✅ Must be last
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
