@@ -9,7 +9,6 @@ const port = process.env.PORT;
 
 app.use(bodyParser.json());
 
-// --- In-Memory Breaks ---
 const breaks = {};
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
@@ -30,7 +29,6 @@ const dailyThemes = {
   Saturday: { chat: '❄️', ticket: '🧊' }
 };
 
-// --- Utility Functions ---
 function getTodayTheme() {
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -74,40 +72,39 @@ function postShiftMessage(slot) {
 
 // --- Slack Event Handler ---
 app.post('/slack/events', (req, res) => {
-  const { type, challenge, event } = req.body;
-  console.log('📥 Incoming Slack event:', JSON.stringify(req.body, null, 2)); // Debug logging
+  console.log('🔔 Incoming Slack event:', req.body);
 
-  // Slack Verification
+  const { type, challenge, event } = req.body;
+
   if (type === 'url_verification') {
     return res.status(200).send(challenge);
   }
 
-  // App Mention + Break Command
   if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
+    console.log(`🔵 Mentioned by user: ${userId}`);
+
     const text = event.text.toLowerCase();
     const now = Date.now();
 
-    if (text.includes('break')) {
-      if (!breaks[userId]) breaks[userId] = { start: 0 };
-      const lastBreak = breaks[userId].start;
-      const timeSince = now - lastBreak;
-      const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
+    if (!breaks[userId]) breaks[userId] = { start: 0 };
+    const lastBreak = breaks[userId].start;
+    const timeSince = now - lastBreak;
+    const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
 
-      if (timeSince < 30 * 60 * 1000) {
-        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
-          .then(() => res.status(200).end());
-      }
-
-      if (someoneElse) {
-        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
-          .then(() => res.status(200).end());
-      }
-
-      breaks[userId].start = now;
-      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
+    if (timeSince < 30 * 60 * 1000) {
+      return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
         .then(() => res.status(200).end());
     }
+
+    if (someoneElse) {
+      return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
+        .then(() => res.status(200).end());
+    }
+
+    breaks[userId].start = now;
+    return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
+      .then(() => res.status(200).end());
   }
 
   res.status(200).end();
