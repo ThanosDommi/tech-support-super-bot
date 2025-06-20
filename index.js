@@ -1,3 +1,5 @@
+// index.js (Tech Support Super Bot - FINAL WORKING VERSION)
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -5,19 +7,23 @@ const schedule = require('node-schedule');
 require('dotenv').config();
 
 const app = express();
-app.use(bodyParser.json());
-
 const port = process.env.PORT || 3000;
 
-// --- Handle Slack Event Subscription ---
+// Parse incoming JSON
+app.use(bodyParser.json());
+
+// ---- Slack URL Verification & Event Handling ----
 const breaks = {};
+
 app.post('/slack/events', (req, res) => {
   const { type, challenge, event } = req.body;
 
+  // URL Verification
   if (type === 'url_verification') {
-    return res.status(200).send(challenge); // 🟢 Key line Slack expects
+    return res.status(200).send(challenge);
   }
 
+  // Event Callback: Handle break request
   if (type === 'event_callback' && event.type === 'app_mention') {
     const userId = event.user;
     const text = event.text.toLowerCase();
@@ -27,8 +33,8 @@ app.post('/slack/events', (req, res) => {
       const userBreak = breaks[userId];
 
       if (userBreak && now - userBreak.start < 30 * 60 * 1000) {
-        replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - (now - userBreak.start)) / 60000)} minutes.`);
-        return res.status(200).send();
+        const minsLeft = Math.ceil((30 * 60 * 1000 - (now - userBreak.start)) / 60000);
+        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${minsLeft} minutes.`);
       }
 
       const someoneElseOnBreak = Object.entries(breaks).some(([uid, b]) =>
@@ -36,19 +42,18 @@ app.post('/slack/events', (req, res) => {
       );
 
       if (someoneElseOnBreak) {
-        replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.');
-        return res.status(200).send();
+        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.');
       }
 
       breaks[userId] = { start: now };
-      replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
+      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
     }
   }
 
   res.status(200).send();
 });
 
-// --- Shift Announcement Logic ---
+// ---- Shift Schedule ----
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
   '06:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
@@ -103,22 +108,21 @@ function replyToSlack(channel, text) {
 function postShiftMessage(slot) {
   const agents = fixedShifts[slot];
   if (!agents) return;
-
   const message = formatShiftMessage(slot, agents.chat, agents.ticket);
   replyToSlack(process.env.SLACK_CHANNEL_ID, message);
 }
 
-// --- Schedule shift messages every 4 hours ---
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
 });
 
-// --- Default Route ---
+// Default GET route for Railway healthcheck
 app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
+// Listen (must be last)
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
