@@ -1,5 +1,3 @@
-// index.js (Tech Support Super Bot - FINAL WORKING VERSION)
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -9,51 +7,51 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Parse incoming JSON
 app.use(bodyParser.json());
 
-// ---- Slack URL Verification & Event Handling ----
-const breaks = {};
-
+// --- Slack Event Handler ---
 app.post('/slack/events', (req, res) => {
   const { type, challenge, event } = req.body;
 
-  // URL Verification
+  // Step 1: Respond to Slack verification
   if (type === 'url_verification') {
     return res.status(200).send(challenge);
   }
 
-  // Event Callback: Handle break request
-  if (type === 'event_callback' && event.type === 'app_mention') {
+  // Step 2: Handle app_mention for break logic
+  if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
     const text = event.text.toLowerCase();
+    const now = Date.now();
 
     if (text.includes('break')) {
-      const now = Date.now();
-      const userBreak = breaks[userId];
+      if (!breaks[userId]) breaks[userId] = { start: 0 };
 
-      if (userBreak && now - userBreak.start < 30 * 60 * 1000) {
-        const minsLeft = Math.ceil((30 * 60 * 1000 - (now - userBreak.start)) / 60000);
-        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${minsLeft} minutes.`);
+      const lastBreak = breaks[userId].start;
+      const timeSince = now - lastBreak;
+      const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
+
+      if (timeSince < 30 * 60 * 1000) {
+        return replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`)
+          .then(() => res.status(200).end());
       }
 
-      const someoneElseOnBreak = Object.entries(breaks).some(([uid, b]) =>
-        uid !== userId && now - b.start < 30 * 60 * 1000
-      );
-
-      if (someoneElseOnBreak) {
-        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.');
+      if (someoneElse) {
+        return replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.')
+          .then(() => res.status(200).end());
       }
 
-      breaks[userId] = { start: now };
-      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
+      breaks[userId].start = now;
+      return replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`)
+        .then(() => res.status(200).end());
     }
   }
 
-  res.status(200).send();
+  res.status(200).end();
 });
 
-// ---- Shift Schedule ----
+// --- Shift Announcement ---
+const breaks = {};
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
   '06:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
@@ -64,13 +62,13 @@ const fixedShifts = {
 };
 
 const dailyThemes = {
-  Sunday:    { chat: '🌙', ticket: '💤' },
-  Monday:    { chat: '🌞', ticket: '📩' },
-  Tuesday:   { chat: '🪓', ticket: '🛡️' },
+  Sunday: { chat: '🌙', ticket: '💤' },
+  Monday: { chat: '🌞', ticket: '📩' },
+  Tuesday: { chat: '🪓', ticket: '🛡️' },
   Wednesday: { chat: '🧬', ticket: '🔬' },
-  Thursday:  { chat: '🍃', ticket: '🌻' },
-  Friday:    { chat: '🔥', ticket: '💼' },
-  Saturday:  { chat: '❄️', ticket: '🧊' }
+  Thursday: { chat: '🍃', ticket: '🌻' },
+  Friday: { chat: '🔥', ticket: '💼' },
+  Saturday: { chat: '❄️', ticket: '🧊' }
 };
 
 function getTodayTheme() {
@@ -89,40 +87,40 @@ function formatShiftMessage(slot, chatAgents, ticketAgents) {
   const nowIL = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
   const hour = new Date(nowIL).getHours();
   const greeting = getGreeting(hour);
-
   return `🕒 ${greeting}\n\n${theme.chat} Chat Agents: ${chatAgents.join(', ')}\n${theme.ticket} Ticket Agents: ${ticketAgents.join(', ')}\n`;
 }
 
 function replyToSlack(channel, text) {
-  axios.post('https://slack.com/api/chat.postMessage', {
+  return axios.post('https://slack.com/api/chat.postMessage', {
     channel,
     text
   }, {
     headers: {
-      'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
       'Content-Type': 'application/json'
     }
-  }).catch(console.error);
+  });
 }
 
 function postShiftMessage(slot) {
   const agents = fixedShifts[slot];
   if (!agents) return;
   const message = formatShiftMessage(slot, agents.chat, agents.ticket);
-  replyToSlack(process.env.SLACK_CHANNEL_ID, message);
+  replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
 }
 
+// --- Scheduler ---
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
 });
 
-// Default GET route for Railway healthcheck
+// --- Health Check ---
 app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
-// Listen (must be last)
+// ✅ MUST be last!
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
