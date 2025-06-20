@@ -75,13 +75,14 @@ function postShiftMessage(slot) {
 // --- Slack Event Handler ---
 app.post('/slack/events', (req, res) => {
   const { type, challenge, event } = req.body;
+  console.log('📥 Incoming Slack event:', JSON.stringify(req.body, null, 2)); // Debug logging
 
   // Slack Verification
   if (type === 'url_verification') {
     return res.status(200).send(challenge);
   }
 
-  // Event Handling
+  // App Mention + Break Command
   if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
     const text = event.text.toLowerCase();
