@@ -76,19 +76,22 @@ app.post('/slack/events', async (req, res) => {
 
   const { type, challenge, event } = req.body;
 
-  // Slack Verification
   if (type === 'url_verification') {
     return res.status(200).send(challenge);
   }
 
-  // Event Handling
   if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
-    const text = event.text.toLowerCase();
+    const rawText = event.text;
+    const text = rawText
+      .replace(/<@[^>]+>/g, '') // remove @bot mentions
+      .trim()
+      .toLowerCase();
+
     const now = Date.now();
 
     console.log(`🔵 Mentioned by user: ${userId}`);
-    console.log(`📝 Text received: ${text}`);
+    console.log(`📝 Text parsed: ${text}`);
 
     if (text.includes('break')) {
       if (!breaks[userId]) breaks[userId] = { start: 0 };
@@ -111,7 +114,6 @@ app.post('/slack/events', async (req, res) => {
       return res.status(200).end();
     }
 
-    // If it's not about break
     await replyToSlack(event.channel, `👋 Hello <@${userId}>! If you want to request a break, just say "break".`);
     return res.status(200).end();
   }
@@ -133,3 +135,4 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
+
