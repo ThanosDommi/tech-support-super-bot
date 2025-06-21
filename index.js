@@ -19,6 +19,15 @@ const fixedShifts = {
   '22:00': { chat: ['Angelica', 'Stelios'], ticket: ['Christina Z.', 'Aggelos'] }
 };
 
+const teamLeaderAssignments = {
+  '08:00': { backend: 'George', frontend: 'Giannis' },
+  '12:00': { backend: 'Giannis', frontend: 'George' },
+  '16:00': { backend: 'Barbara', frontend: 'Marcio' },
+  '20:00': { backend: 'Marcio', frontend: 'Barbara' },
+  '00:00': { backend: 'Carmela', frontend: 'Krissy' },
+  '04:00': { backend: 'Krissy', frontend: 'Carmela' }
+};
+
 const dailyThemes = {
   Sunday: { chat: '🌙', ticket: '💤' },
   Monday: { chat: '🌞', ticket: '📩' },
@@ -51,6 +60,12 @@ function formatShiftMessage(slot, chatAgents, ticketAgents) {
   return `🕒 ${greeting}\n\n${theme.chat} Chat Agents: ${chatAgents.join(', ')}\n${theme.ticket} Ticket Agents: ${ticketAgents.join(', ')}\n`;
 }
 
+function formatTeamLeaderMessage(slot) {
+  const leaders = teamLeaderAssignments[slot];
+  if (!leaders) return '';
+  return `🎯 *Team Leader Assignment*\n🧠 Backend TL: ${leaders.backend}\n💬 Frontend TL: ${leaders.frontend}`;
+}
+
 function replyToSlack(channel, text) {
   return axios.post('https://slack.com/api/chat.postMessage', {
     channel,
@@ -76,7 +91,14 @@ function postShiftMessage(slot) {
   replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
 }
 
-// 🔔 Event Handler
+function postTeamLeaderMessage(slot) {
+  const message = formatTeamLeaderMessage(slot);
+  if (message) {
+    replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
+  }
+}
+
+// 🔔 Slack Event Handler
 app.post('/slack/events', async (req, res) => {
   console.log('🔔 Incoming Slack event:', req.body);
 
@@ -90,7 +112,7 @@ app.post('/slack/events', async (req, res) => {
     const userId = event.user;
     const rawText = event.text;
     const text = rawText
-      .replace(/<@[^>]+>/g, '') // Remove @bot mentions
+      .replace(/<@[^>]+>/g, '')
       .trim()
       .toLowerCase();
 
@@ -132,10 +154,16 @@ app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
-// Scheduler
+// ⏰ Schedule shift messages
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
+});
+
+// ⏰ Schedule team leader announcements
+['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'].forEach(t => {
+  const [h, m] = t.split(':').map(Number);
+  schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postTeamLeaderMessage(t));
 });
 
 app.listen(port, () => {
