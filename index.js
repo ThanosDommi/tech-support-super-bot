@@ -60,6 +60,12 @@ function replyToSlack(channel, text) {
       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
       'Content-Type': 'application/json'
     }
+  })
+  .then(res => {
+    console.log('📤 Slack API response:', res.data);
+  })
+  .catch(err => {
+    console.error('❌ Slack API error:', err.response?.data || err.message);
   });
 }
 
@@ -84,7 +90,7 @@ app.post('/slack/events', async (req, res) => {
     const userId = event.user;
     const rawText = event.text;
     const text = rawText
-      .replace(/<@[^>]+>/g, '') // remove @bot mentions
+      .replace(/<@[^>]+>/g, '') // Remove @bot mentions
       .trim()
       .toLowerCase();
 
@@ -135,4 +141,3 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
   console.log(`✅ Bot live on port ${port}`);
 });
-
