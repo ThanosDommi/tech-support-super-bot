@@ -9,14 +9,16 @@ const port = process.env.PORT || 8080;
 
 app.use(bodyParser.json());
 
-const breaks = {};
+const breaks = {}; // { userId: { start: timestamp } }
+const breakQueue = []; // [{ userId, channel }]
+
 const fixedShifts = {
-  '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
-  '06:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
-  '10:00': { chat: ['Angelica', 'Stelios'], ticket: ['Christina Z.', 'Aggelos'] },
-  '14:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
-  '18:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
-  '22:00': { chat: ['Angelica', 'Stelios'], ticket: ['Christina Z.', 'Aggelos'] }
+  '02:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
+  '06:00': { chat: ['Krizza', 'Lorain', 'Thanos'], ticket: ['Michael', 'Dimitris', 'Thanos'] },
+  '10:00': { chat: ['Angelica', 'Stelios', 'Thanos'], ticket: ['Christina Z.', 'Aggelos', 'Thanos'] },
+  '14:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
+  '18:00': { chat: ['Krizza', 'Lorain', 'Thanos'], ticket: ['Michael', 'Dimitris', 'Thanos'] },
+  '22:00': { chat: ['Angelica', 'Stelios', 'Thanos'], ticket: ['Christina Z.', 'Aggelos', 'Thanos'] }
 };
 
 const teamLeaderAssignments = {
@@ -75,11 +77,9 @@ function replyToSlack(channel, text) {
       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
       'Content-Type': 'application/json'
     }
-  })
-  .then(res => {
+  }).then(res => {
     console.log('📤 Slack API response:', res.data);
-  })
-  .catch(err => {
+  }).catch(err => {
     console.error('❌ Slack API error:', err.response?.data || err.message);
   });
 }
@@ -88,62 +88,77 @@ function postShiftMessage(slot) {
   const agents = fixedShifts[slot];
   if (!agents) return;
   const message = formatShiftMessage(slot, agents.chat, agents.ticket);
-  replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
+  replyToSlack(process.env.SLACK_CHANNEL_ID, message);
 }
 
 function postTeamLeaderMessage(slot) {
   const message = formatTeamLeaderMessage(slot);
-  if (message) {
-    replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
+  if (message) replyToSlack(process.env.SLACK_CHANNEL_ID, message);
+}
+
+function getCurrentILHour() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })).getHours();
+}
+
+function isInLastHour() {
+  const hour = getCurrentILHour();
+  return (hour === 9 || hour === 17 || hour === 1);
+}
+
+function resetBreaksDaily() {
+  const now = new Date();
+  if (now.getHours() === 0 && now.getMinutes() === 0) {
+    Object.keys(breaks).forEach(user => delete breaks[user]);
   }
 }
 
-// 🔔 Slack Event Handler
+function startBreakTimer(userId, channel) {
+  breaks[userId] = { start: Date.now() };
+  setTimeout(() => {
+    delete breaks[userId];
+    if (breakQueue.length > 0) {
+      const next = breakQueue.shift();
+      startBreakTimer(next.userId, next.channel);
+      replyToSlack(next.channel, `✅ Break now granted to <@${next.userId}>! Enjoy your 30 minutes!`);
+    }
+  }, 30 * 60 * 1000);
+}
+
 app.post('/slack/events', async (req, res) => {
-  console.log('🔔 Incoming Slack event:', req.body);
-
   const { type, challenge, event } = req.body;
+  if (type === 'url_verification') return res.status(200).send(challenge);
 
-  if (type === 'url_verification') {
-    return res.status(200).send(challenge);
-  }
-
-  if (type === 'event_callback' && event && event.type === 'app_mention') {
+  if (type === 'event_callback' && event.type === 'app_mention') {
     const userId = event.user;
     const rawText = event.text;
-    const text = rawText
-      .replace(/<@[^>]+>/g, '')
-      .trim()
-      .toLowerCase();
+    const channel = event.channel;
+    const text = rawText.replace(/<@[^>]+>/g, '').trim().toLowerCase();
 
-    const now = Date.now();
+    console.log(`🔵 Mentioned by ${userId}:`, text);
 
-    console.log(`🔵 Mentioned by user: ${userId}`);
-    console.log(`📝 Text parsed: ${text}`);
+    resetBreaksDaily();
 
     if (text.includes('break')) {
-      if (!breaks[userId]) breaks[userId] = { start: 0 };
-      const lastBreak = breaks[userId].start;
-      const timeSince = now - lastBreak;
-      const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
-
-      if (timeSince < 30 * 60 * 1000) {
-        await replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`);
-        return res.status(200).end();
+      if (breaks[userId]) {
+        return replyToSlack(channel, `🕒 You're already on break <@${userId}>! Come back soon.`);
       }
 
-      if (someoneElse) {
-        await replyToSlack(event.channel, '❌ Someone else is on break. Please try again later.');
-        return res.status(200).end();
+      if (isInLastHour()) {
+        return replyToSlack(channel, `⛔ Sorry <@${userId}>, no breaks allowed during the last hour of your shift.`);
       }
 
-      breaks[userId].start = now;
-      await replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
-      return res.status(200).end();
+      const activeBreak = Object.entries(breaks).find(([uid, b]) => Date.now() - b.start < 30 * 60 * 1000);
+
+      if (activeBreak) {
+        breakQueue.push({ userId, channel });
+        return replyToSlack(channel, `🕓 Break queue activated <@${userId}>. You’ll be next!`);
+      }
+
+      startBreakTimer(userId, channel);
+      return replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
     }
 
-    await replyToSlack(event.channel, `👋 Hello <@${userId}>! If you want to request a break, just say "break".`);
-    return res.status(200).end();
+    replyToSlack(channel, `👋 Hello <@${userId}>! Just say "break" to request one.`);
   }
 
   res.status(200).end();
@@ -154,16 +169,15 @@ app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
-// ⏰ Schedule shift messages
+// Schedulers
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
 });
 
-// ⏰ Schedule team leader announcements
-['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'].forEach(t => {
-  const [h, m] = t.split(':').map(Number);
-  schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postTeamLeaderMessage(t));
+['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'].forEach(tl => {
+  const [h, m] = tl.split(':').map(Number);
+  schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postTeamLeaderMessage(tl));
 });
 
 app.listen(port, () => {
