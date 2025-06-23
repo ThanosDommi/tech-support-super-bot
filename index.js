@@ -124,6 +124,13 @@ function startBreakTimer(userId, channel) {
   }, 30 * 60 * 1000);
 }
 
+function getRemainingTime(startTime) {
+  const now = Date.now();
+  const remainingMs = 30 * 60 * 1000 - (now - startTime);
+  const mins = Math.ceil(remainingMs / 60000);
+  return mins > 0 ? mins : 0;
+}
+
 app.post('/slack/events', async (req, res) => {
   const { type, challenge, event } = req.body;
   if (type === 'url_verification') return res.status(200).send(challenge);
@@ -151,8 +158,11 @@ app.post('/slack/events', async (req, res) => {
 
       const activeBreak = Object.entries(breaks).find(([uid, b]) => Date.now() - b.start < 30 * 60 * 1000);
       if (activeBreak) {
+        const [onBreakUserId, breakInfo] = activeBreak;
+        const minsLeft = getRemainingTime(breakInfo.start);
         breakQueue.push({ userId, channel });
-        await replyToSlack(channel, `🕓 Break queue activated <@${userId}>. You’ll be next!`);
+        await replyToSlack(channel, `❌ Someone else is on break!
+⏳ <@${onBreakUserId}> has **${minsLeft} minutes** left. You’ll be next!`);
         return res.status(200).end();
       }
 
