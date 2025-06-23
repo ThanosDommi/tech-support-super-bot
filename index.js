@@ -2,15 +2,19 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const schedule = require('node-schedule');
+const { WebClient } = require('@slack/web-api');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 8080;
+const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 
 app.use(bodyParser.json());
 
 const breaks = {}; // { userId: { start: timestamp } }
-const breakQueue = []; // [{ userId, channel }]
+const breakQueue = [];
+const shiftCheckins = {}; // { timestamp: { userId: 'pending' | 'checked_in' | 'absent' } }
+const absences = {}; // { userId: [date strings] }
 
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
@@ -68,27 +72,70 @@ function formatTeamLeaderMessage(slot) {
   return `🎯 *Team Leader Assignment*\n🧠 Backend TL: ${leaders.backend}\n💬 Frontend TL: ${leaders.frontend}`;
 }
 
-function replyToSlack(channel, text) {
-  return axios.post('https://slack.com/api/chat.postMessage', {
-    channel,
-    text
-  }, {
-    headers: {
-      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  }).then(res => {
-    console.log('📤 Slack API response:', res.data);
-  }).catch(err => {
-    console.error('❌ Slack API error:', err.response?.data || err.message);
-  });
+async function replyToSlack(channel, text) {
+  try {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('❌ Slack reply error:', err.message);
+  }
 }
 
-function postShiftMessage(slot) {
+async function postShiftMessage(slot) {
   const agents = fixedShifts[slot];
   if (!agents) return;
   const message = formatShiftMessage(slot, agents.chat, agents.ticket);
-  replyToSlack(process.env.SLACK_CHANNEL_ID, message);
+  const res = await slack.chat.postMessage({
+    channel: process.env.SLACK_CHANNEL_ID,
+    text: message
+  });
+
+  const ts = res.ts;
+  const allAgents = [...agents.chat, ...agents.ticket];
+  shiftCheckins[ts] = {};
+  allAgents.forEach(agent => {
+    shiftCheckins[ts][agent.toLowerCase()] = 'pending';
+  });
+
+  setTimeout(() => checkShiftCheckins(ts, allAgents), 4 * 60 * 1000);
+}
+
+async function checkShiftCheckins(ts, agents) {
+  const pending = Object.entries(shiftCheckins[ts] || {}).filter(([_, status]) => status === 'pending');
+  for (const [name] of pending) {
+    const user = await findUserIdByName(name);
+    if (user) {
+      await replyToSlack('C092H86AJ2J', `❌ <@${user}> has not checked in for the shift. Please confirm presence ASAP.`);
+      setTimeout(() => finalizeAbsence(ts, user, name), 2 * 60 * 1000);
+    }
+  }
+}
+
+function finalizeAbsence(ts, userId, name) {
+  if (shiftCheckins[ts] && shiftCheckins[ts][name] === 'pending') {
+    shiftCheckins[ts][name] = 'absent';
+    const today = new Date().toISOString().split('T')[0];
+    if (!absences[userId]) absences[userId] = [];
+    absences[userId].push(today);
+    replyToSlack('C092H86AJ2J', `📌 <@${userId}> marked as absent for today.`);
+  }
+}
+
+async function findUserIdByName(name) {
+  try {
+    const users = await slack.users.list();
+    const match = users.members.find(u => u.name.toLowerCase().includes(name.toLowerCase()) || u.real_name.toLowerCase().includes(name.toLowerCase()));
+    return match?.id;
+  } catch {
+    return null;
+  }
 }
 
 function postTeamLeaderMessage(slot) {
@@ -141,8 +188,6 @@ app.post('/slack/events', async (req, res) => {
     const channel = event.channel;
     const text = rawText.replace(/<@[^>]+>/g, '').trim().toLowerCase();
 
-    console.log(`🔵 Mentioned by ${userId}:`, text);
-
     resetBreaksDaily();
 
     if (text.includes('break')) {
@@ -161,8 +206,7 @@ app.post('/slack/events', async (req, res) => {
         const [onBreakUserId, breakInfo] = activeBreak;
         const minsLeft = getRemainingTime(breakInfo.start);
         breakQueue.push({ userId, channel });
-        await replyToSlack(channel, `❌ Someone else is on break!
-⏳ <@${onBreakUserId}> has **${minsLeft} minutes** left. You’ll be next!`);
+        await replyToSlack(channel, `❌ Someone else is on break!\n⏳ <@${onBreakUserId}> has **${minsLeft} minutes** left. You’ll be next!`);
         return res.status(200).end();
       }
 
