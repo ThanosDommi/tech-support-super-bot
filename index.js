@@ -2,18 +2,16 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const schedule = require('node-schedule');
-const qs = require('qs'); // required for slash command parsing
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 8080;
 
-app.use(bodyParser.urlencoded({ extended: true })); // for slash commands
-app.use(bodyParser.json()); // for event handling
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 
-// 👥 In-memory storage
 const breaks = {};
-const sickRequests = [];
+const absenceReports = [];
 
 const fixedShifts = {
   '02:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
@@ -63,7 +61,7 @@ function replyToSlack(channel, text) {
   }, {
     headers: {
       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json; charset=utf-8'
     }
   });
 }
@@ -75,69 +73,49 @@ function postShiftMessage(slot) {
   replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
 }
 
-// 🆕 Slash command: /sick
-app.post('/slack/commands', async (req, res) => {
-  const { command, user_id, user_name, text } = req.body;
-
-  if (command === '/sick') {
-    sickRequests.push({ user_id, user_name, reason: text, time: new Date() });
-
-    // You can also DM TLs here or store more data
-    await replyToSlack(process.env.SLACK_CHANNEL_ID, `🤒 <@${user_id}> reported sick: "${text || 'No reason provided'}". TLs please confirm.`);
-
-    res.status(200).send(`✅ Got it <@${user_id}>! A TL will confirm the absence soon.`);
-  } else {
-    res.status(200).send('Unknown command.');
-  }
-});
-
-// 🟣 Slack Events API (mentions + break logic)
+// 🔔 Event Handler
 app.post('/slack/events', async (req, res) => {
+  console.log('🔔 Incoming Slack event:', req.body);
+
   const { type, challenge, event } = req.body;
 
-  if (type === 'url_verification') return res.status(200).send(challenge);
+  if (type === 'url_verification') {
+    return res.status(200).send(challenge);
+  }
 
-  if (type === 'event_callback' && event.type === 'app_mention') {
+  if (type === 'event_callback' && event && event.type === 'app_mention') {
     const userId = event.user;
     const text = event.text.toLowerCase();
     const now = Date.now();
+
+    console.log(`🔵 Mentioned by user: ${userId}`);
+    console.log(`📝 Text parsed: ${text}`);
 
     if (text.includes('break')) {
       if (!breaks[userId]) breaks[userId] = { start: 0 };
       const lastBreak = breaks[userId].start;
       const timeSince = now - lastBreak;
       const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
-      const israelTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
-      const hour = new Date(israelTime).getHours();
-
-      // Block if last hour
-      const currentShift = Object.entries(fixedShifts).find(([slot]) => {
-        const [h] = slot.split(':').map(Number);
-        return Math.abs(h - hour) <= 2;
-      });
-
-      if (currentShift) {
-        const [shiftHour] = currentShift[0].split(':').map(Number);
-        if ((hour === (shiftHour + 7) % 24)) {
-          await replyToSlack(event.channel, `❌ You can't take a break during the last hour of your shift <@${userId}>!`);
-          return res.status(200).end();
-        }
-      }
 
       if (timeSince < 30 * 60 * 1000) {
-        await replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back in ${Math.ceil((30 * 60 * 1000 - timeSince) / 60000)} minutes.`);
+        await replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back soon.`);
         return res.status(200).end();
       }
 
       if (someoneElse) {
-        const other = Object.entries(breaks).find(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
-        const minsLeft = 30 - Math.floor((now - other[1].start) / 60000);
-        await replyToSlack(event.channel, `⏳ Another agent is on break. You can go in ${minsLeft} minutes <@${userId}>.`);
+        const otherBreak = Object.entries(breaks).find(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
+        const remaining = 30 - Math.floor((now - otherBreak[1].start) / 60000);
+        await replyToSlack(event.channel, `⌛ Someone else is on break. Please try again in ${remaining} minutes.`);
         return res.status(200).end();
       }
 
       breaks[userId].start = now;
       await replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
+      return res.status(200).end();
+    }
+
+    if (text.includes('sick')) {
+      await replyToSlack(event.channel, `📌 Feature under construction, stay tuned <@${userId}>!`);
       return res.status(200).end();
     }
 
@@ -148,12 +126,26 @@ app.post('/slack/events', async (req, res) => {
   res.status(200).end();
 });
 
-// 🩺 Health check
+// Slash Commands Endpoint
+app.post('/slack/commands', async (req, res) => {
+  const { command, user_id, text, response_url } = req.body;
+  console.log(`📟 Slash command received: ${command} from ${user_id}`);
+
+  if (command === '/sick') {
+    const message = `🤒 <@${user_id}> reported sick. TLs, please confirm and mark the shift as absent.`;
+    await replyToSlack(process.env.SLACK_CHANNEL_ID, message);
+    return res.status(200).send(`✅ Your sick report has been received. Get well soon!`);
+  }
+
+  res.status(200).send('⚙️ Command received. Processing...');
+});
+
+// Health check
 app.get('/', (req, res) => {
   res.send('🟢 Tech Support Super Bot is active!');
 });
 
-// ⏱ Scheduler for shifts
+// Scheduler
 ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
   const [h, m] = t.split(':').map(Number);
   schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
