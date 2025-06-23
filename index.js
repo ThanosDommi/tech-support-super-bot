@@ -140,25 +140,29 @@ app.post('/slack/events', async (req, res) => {
 
     if (text.includes('break')) {
       if (breaks[userId]) {
-        return replyToSlack(channel, `🕒 You're already on break <@${userId}>! Come back soon.`);
+        await replyToSlack(channel, `🕒 You're already on break <@${userId}>! Come back soon.`);
+        return res.status(200).end();
       }
 
       if (isInLastHour()) {
-        return replyToSlack(channel, `⛔ Sorry <@${userId}>, no breaks allowed during the last hour of your shift.`);
+        await replyToSlack(channel, `⛔ Sorry <@${userId}>, no breaks allowed during the last hour of your shift.`);
+        return res.status(200).end();
       }
 
       const activeBreak = Object.entries(breaks).find(([uid, b]) => Date.now() - b.start < 30 * 60 * 1000);
-
       if (activeBreak) {
         breakQueue.push({ userId, channel });
-        return replyToSlack(channel, `🕓 Break queue activated <@${userId}>. You’ll be next!`);
+        await replyToSlack(channel, `🕓 Break queue activated <@${userId}>. You’ll be next!`);
+        return res.status(200).end();
       }
 
       startBreakTimer(userId, channel);
-      return replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
+      await replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
+      return res.status(200).end();
     }
 
-    replyToSlack(channel, `👋 Hello <@${userId}>! Just say "break" to request one.`);
+    await replyToSlack(channel, `👋 Hello <@${userId}>! Just say \"break\" to request one.`);
+    return res.status(200).end();
   }
 
   res.status(200).end();
