@@ -1,156 +1,139 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const schedule = require('node-schedule');
-require('dotenv').config();
-
 const app = express();
-const port = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-const breaks = {};
-const absenceReports = [];
-
-const fixedShifts = {
-  '02:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
-  '06:00': { chat: ['Krizza', 'Lorain', 'Thanos'], ticket: ['Michael', 'Dimitris', 'Thanos'] },
-  '10:00': { chat: ['Angelica', 'Stelios', 'Thanos'], ticket: ['Christina Z.', 'Aggelos', 'Thanos'] },
-  '14:00': { chat: ['Zoe', 'Jean', 'Thanos'], ticket: ['Mae Jean', 'Ella', 'Thanos'] },
-  '18:00': { chat: ['Krizza', 'Lorain', 'Thanos'], ticket: ['Michael', 'Dimitris', 'Thanos'] },
-  '22:00': { chat: ['Angelica', 'Stelios', 'Thanos'], ticket: ['Christina Z.', 'Aggelos', 'Thanos'] }
-};
-
-const dailyThemes = {
-  Sunday: { chat: '🌙', ticket: '💤' },
-  Monday: { chat: '🌞', ticket: '📩' },
-  Tuesday: { chat: '🪓', ticket: '🛡️' },
-  Wednesday: { chat: '🧬', ticket: '🔬' },
-  Thursday: { chat: '🍃', ticket: '🌻' },
-  Friday: { chat: '🔥', ticket: '💼' },
-  Saturday: { chat: '❄️', ticket: '🧊' }
-};
-
-function getTodayTheme() {
-  const today = new Date().toLocaleDateString('en-US', {
-    weekday: 'long',
-    timeZone: 'Asia/Jerusalem',
-  });
-  return dailyThemes[today];
+// Utility: Post to a Slack channel
+async function replyToSlack(channel, message) {
+  try {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: message,
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (error) {
+    console.error('Error sending message to Slack:', error);
+  }
 }
 
+// Time-based greetings
 function getGreeting(hour) {
-  if (hour < 12) return 'Good morning Tech Agents!';
-  if (hour < 18) return 'Good afternoon Tech Agents!';
-  return 'Good evening Tech Agents!';
+  if (hour < 12) return '🌅 Good morning Tech Agents!';
+  if (hour < 18) return '🌞 Good afternoon Tech Agents!';
+  return '🌙 Good evening Tech Agents!';
 }
 
-function formatShiftMessage(slot, chatAgents, ticketAgents) {
-  const theme = getTodayTheme();
-  const nowIL = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
-  const hour = new Date(nowIL).getHours();
-  const greeting = getGreeting(hour);
-  return `🕒 ${greeting}\n\n${theme.chat} Chat Agents: ${chatAgents.join(', ')}\n${theme.ticket} Ticket Agents: ${ticketAgents.join(', ')}\n`;
-}
+// Rotating emojis
+const emojiThemes = [
+  { chat: '🌼', ticket: '📩' },
+  { chat: '🔮', ticket: '🧾' },
+  { chat: '🍭', ticket: '📪' },
+  { chat: '🍀', ticket: '📬' },
+];
 
-function replyToSlack(channel, text) {
-  return axios.post('https://slack.com/api/chat.postMessage', {
-    channel,
-    text
-  }, {
-    headers: {
-      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
+// Team Leaders fixed structure
+const teamLeaders = {
+  '02:00': { backend: 'Carmela', frontend: 'Krissy' },
+  '04:00': { backend: 'Krissy', frontend: 'Carmela' },
+  '08:00': { backend: 'George', frontend: 'Giannis' },
+  '12:00': { backend: 'Giannis', frontend: 'George' },
+  '16:00': { backend: 'Barbara', frontend: 'Marcio' },
+  '20:00': { backend: 'Marcio', frontend: 'Barbara' },
+  '00:00': { backend: 'Carmela', frontend: 'Krissy' },
+};
 
-function postShiftMessage(slot) {
-  const agents = fixedShifts[slot];
-  if (!agents) return;
-  const message = formatShiftMessage(slot, agents.chat, agents.ticket);
-  replyToSlack(process.env.SLACK_CHANNEL_ID, message).catch(console.error);
-}
+// Agent shift structure
+const agentShifts = {
+  '02:00': {
+    chat: ['Zoe', 'Jean', 'Thanos'],
+    ticket: ['Mae Jean', 'Ella', 'Thanos']
+  },
+  '06:00': {
+    chat: ['Krizza', 'Lorain', 'Thanos'],
+    ticket: ['Michael', 'Dimitris', 'Thanos']
+  },
+  '10:00': {
+    chat: ['Angelica', 'Stelios', 'Thanos'],
+    ticket: ['Christina Z.', 'Aggelos', 'Thanos']
+  },
+  '14:00': {
+    chat: ['Cezamarie', 'Jean', 'Thanos'],
+    ticket: ['Lorain', 'Ella', 'Thanos']
+  },
+  '18:00': {
+    chat: ['Krizza', 'Zoe', 'Thanos'],
+    ticket: ['Michael', 'Jean', 'Thanos']
+  },
+  '22:00': {
+    chat: ['Angelica', 'Jean', 'Thanos'],
+    ticket: ['Christina Z.', 'Ella', 'Thanos']
+  }
+};
 
-// 🔔 Event Handler
-app.post('/slack/events', async (req, res) => {
-  console.log('🔔 Incoming Slack event:', req.body);
+// Post shift message
+async function postShiftMessage(time) {
+  const { chat, ticket } = agentShifts[time] || {};
+  const tl = teamLeaders[time] || {};
+  const emoji = emojiThemes[Math.floor(Math.random() * emojiThemes.length)];
+  const greeting = getGreeting(parseInt(time));
 
-  const { type, challenge, event } = req.body;
-
-  if (type === 'url_verification') {
-    return res.status(200).send(challenge);
+  let message = `🧠 *Team Leader Assignment*\n🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}\n\n`;
+  message += `🕒 ${greeting}\n\n`;
+  if (chat && ticket) {
+    message += `${emoji.chat} *Chat Agents:* ${chat.join(', ')}\n`;
+    message += `${emoji.ticket} *Ticket Agents:* ${ticket.join(', ')}`;
+  } else {
+    message += '⚠️ No agent data found for this shift.';
   }
 
-  if (type === 'event_callback' && event && event.type === 'app_mention') {
-    const userId = event.user;
-    const text = event.text.toLowerCase();
-    const now = Date.now();
+  await replyToSlack('C0929GPUAAZ', message); // #on_duty_tech_support
+}
 
-    console.log(`🔵 Mentioned by user: ${userId}`);
-    console.log(`📝 Text parsed: ${text}`);
-
-    if (text.includes('break')) {
-      if (!breaks[userId]) breaks[userId] = { start: 0 };
-      const lastBreak = breaks[userId].start;
-      const timeSince = now - lastBreak;
-      const someoneElse = Object.entries(breaks).some(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
-
-      if (timeSince < 30 * 60 * 1000) {
-        await replyToSlack(event.channel, `🕒 You're already on break <@${userId}>! Come back soon.`);
-        return res.status(200).end();
-      }
-
-      if (someoneElse) {
-        const otherBreak = Object.entries(breaks).find(([uid, b]) => uid !== userId && now - b.start < 30 * 60 * 1000);
-        const remaining = 30 - Math.floor((now - otherBreak[1].start) / 60000);
-        await replyToSlack(event.channel, `⌛ Someone else is on break. Please try again in ${remaining} minutes.`);
-        return res.status(200).end();
-      }
-
-      breaks[userId].start = now;
-      await replyToSlack(event.channel, `✅ Break granted to <@${userId}>! Enjoy 30 minutes!`);
-      return res.status(200).end();
-    }
-
-    if (text.includes('sick')) {
-      await replyToSlack(event.channel, `📌 Feature under construction, stay tuned <@${userId}>!`);
-      return res.status(200).end();
-    }
-
-    await replyToSlack(event.channel, `👋 Hello <@${userId}>! If you want to request a break, just say "break".`);
-    return res.status(200).end();
+// Shift scheduler (24/7)
+const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
+setInterval(async () => {
+  const now = new Date();
+  const currentTime = now.toTimeString().slice(0, 5);
+  if (shiftTimes.includes(currentTime)) {
+    console.log(`⏰ Posting shift message for ${currentTime}`);
+    await postShiftMessage(currentTime);
   }
+}, 60000); // every minute check
 
-  res.status(200).end();
-});
-
-// Slash Commands Endpoint
+// Slash Commands
 app.post('/slack/commands', async (req, res) => {
-  const { command, user_id, text, response_url } = req.body;
-  console.log(`📟 Slash command received: ${command} from ${user_id}`);
+  const { command, user_id } = req.body;
 
   if (command === '/sick') {
-    const message = `🤒 <@${user_id}> reported sick. TLs, please confirm and mark the shift as absent.`;
-    await replyToSlack(process.env.SLACK_CHANNEL_ID, message);
-    return res.status(200).send(`✅ Your sick report has been received. Get well soon!`);
+    const message = `🥺 <@${user_id}> reported sick. TLs, please confirm and mark the shift as absent.`;
+
+    // Send public message to #absences
+    await replyToSlack('C092H86AJ2J', message);
+
+    // Ephemeral confirmation
+    return res.json({
+      response_type: 'ephemeral',
+      text: '✅ Your sick report has been received. Get well soon!'
+    });
   }
 
-  res.status(200).send('⚙️ Command received. Processing...');
+  return res.status(200).send('⚙️ Command received. Processing...');
 });
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('🟢 Tech Support Super Bot is active!');
+  res.send('Nova is up and running!');
 });
 
-// Scheduler
-['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'].forEach(t => {
-  const [h, m] = t.split(':').map(Number);
-  schedule.scheduleJob({ hour: h, minute: m, tz: 'Asia/Jerusalem' }, () => postShiftMessage(t));
+app.listen(PORT, () => {
+  console.log(`✅ Nova is live on port ${PORT}`);
 });
 
-app.listen(port, () => {
-  console.log(`✅ Bot live on port ${port}`);
-});
