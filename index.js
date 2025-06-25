@@ -7,7 +7,16 @@ const PORT = process.env.PORT || 3000;
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Utility: Post to a Slack channel
+// === Config ===
+const SLACK_CHANNEL_SUPPORT = 'C0929GPUAAZ';   // On-duty announcements
+const SLACK_CHANNEL_COVERAGE = 'C092HG70ZPY';  // Coverage gaps
+const BREAK_DURATION = 30 * 60 * 1000; // 30 minutes
+
+// === Memory Stores ===
+const currentBreaks = {}; // { userId: endTimestamp }
+const breakQueue = [];    // [{ userId, channel }]
+
+// === Utility: Post to a Slack channel ===
 async function replyToSlack(channel, message) {
   try {
     await axios.post('https://slack.com/api/chat.postMessage', {
@@ -20,18 +29,18 @@ async function replyToSlack(channel, message) {
       },
     });
   } catch (error) {
-    console.error('Error sending message to Slack:', error);
+    console.error('Error sending message to Slack:', error.response?.data || error.message);
   }
 }
 
-// Time-based greetings
+// === Greeting by Time ===
 function getGreeting(hour) {
   if (hour < 12) return '🌅 Good morning Tech Agents!';
   if (hour < 18) return '🌞 Good afternoon Tech Agents!';
   return '🌙 Good evening Tech Agents!';
 }
 
-// Rotating emojis
+// === Rotating Emojis ===
 const emojiThemes = [
   { chat: '🌼', ticket: '📩' },
   { chat: '🔮', ticket: '🧾' },
@@ -39,7 +48,7 @@ const emojiThemes = [
   { chat: '🍀', ticket: '📬' },
 ];
 
-// Team Leaders fixed structure
+// === Fixed Team Leaders ===
 const teamLeaders = {
   '02:00': { backend: 'Carmela', frontend: 'Krissy' },
   '04:00': { backend: 'Krissy', frontend: 'Carmela' },
@@ -50,7 +59,7 @@ const teamLeaders = {
   '00:00': { backend: 'Carmela', frontend: 'Krissy' },
 };
 
-// Agent shift structure
+// === Agent Shift Assignments ===
 const agentShifts = {
   '02:00': {
     chat: ['Zoe', 'Jean'],
@@ -78,7 +87,7 @@ const agentShifts = {
   }
 };
 
-// Post shift message
+// === Shift Announcement Logic ===
 async function postShiftMessage(time) {
   const { chat, ticket } = agentShifts[time] || {};
   const tl = teamLeaders[time] || {};
@@ -94,10 +103,10 @@ async function postShiftMessage(time) {
     message += '⚠️ No agent data found for this shift.';
   }
 
-  await replyToSlack('C0929GPUAAZ', message); // #on_duty_tech_support
+  await replyToSlack(SLACK_CHANNEL_SUPPORT, message);
 }
 
-// Shift scheduler (24/7)
+// === Auto Shift Scheduler (every minute) ===
 const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
 setInterval(async () => {
   const now = new Date();
@@ -107,13 +116,63 @@ setInterval(async () => {
     console.log(`⏰ Posting shift message for ${currentTime}`);
     await postShiftMessage(currentTime);
   }
-}, 60000); // every minute check
+}, 60000);
 
-// Health check
+// === Slack Events: Break Handling via @Nova Mentions ===
+app.post('/slack/events', async (req, res) => {
+  const event = req.body.event;
+  res.sendStatus(200);
+  if (!event || event.type !== 'app_mention') return;
+
+  const userId = event.user;
+  const channel = event.channel;
+  const now = new Date();
+
+  // Already on break?
+  if (currentBreaks[userId]) {
+    const remaining = Math.ceil((currentBreaks[userId] - now) / 60000);
+    await replyToSlack(channel, `🕒 <@${userId}>, you're already on break! ${remaining} minutes left.`);
+    return;
+  }
+
+  // Someone else is on break?
+  const otherId = Object.keys(currentBreaks)[0];
+  if (otherId) {
+    const remaining = Math.ceil((currentBreaks[otherId] - now) / 60000);
+    breakQueue.push({ userId, channel });
+    await replyToSlack(channel, `⏳ <@${userId}> you're queued for a break. ${remaining} minutes left before it's your turn.`);
+    return;
+  }
+
+  // Grant break
+  currentBreaks[userId] = new Date(now.getTime() + BREAK_DURATION);
+  await replyToSlack(channel, `✅ <@${userId}> you're on a 30-minute break now. Enjoy!`);
+
+  setTimeout(async () => {
+    delete currentBreaks[userId];
+    await replyToSlack(channel, `⏰ <@${userId}>, your break is over!`);
+
+    // Grant next in queue
+    if (breakQueue.length > 0) {
+      const next = breakQueue.shift();
+      currentBreaks[next.userId] = new Date(Date.now() + BREAK_DURATION);
+      await replyToSlack(next.channel, `🔁 <@${next.userId}> it's your turn! Enjoy your 30-minute break.`);
+
+      setTimeout(async () => {
+        delete currentBreaks[next.userId];
+        await replyToSlack(next.channel, `⏰ <@${next.userId}> your break is over!`);
+      }, BREAK_DURATION);
+    }
+  }, BREAK_DURATION);
+});
+
+// === Health Check ===
 app.get('/', (req, res) => {
   res.send('Nova is up and running!');
 });
 
+// === Start App ===
 app.listen(PORT, () => {
   console.log(`✅ Nova is live on port ${PORT}`);
 });
+
