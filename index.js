@@ -7,16 +7,7 @@ const PORT = process.env.PORT || 3000;
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// === Config ===
-const SLACK_CHANNEL_SUPPORT = 'C0929GPUAAZ';   // On-duty announcements
-const SLACK_CHANNEL_COVERAGE = 'C092HG70ZPY';  // Coverage gaps
-const BREAK_DURATION = 30 * 60 * 1000; // 30 minutes
-
-// === Memory Stores ===
-const currentBreaks = {}; // { userId: endTimestamp }
-const breakQueue = [];    // [{ userId, channel }]
-
-// === Utility: Post to a Slack channel ===
+// Utility: Post to a Slack channel
 async function replyToSlack(channel, message) {
   try {
     await axios.post('https://slack.com/api/chat.postMessage', {
@@ -29,18 +20,18 @@ async function replyToSlack(channel, message) {
       },
     });
   } catch (error) {
-    console.error('Error sending message to Slack:', error.response?.data || error.message);
+    console.error('Error sending message to Slack:', error);
   }
 }
 
-// === Greeting by Time ===
+// Time-based greetings
 function getGreeting(hour) {
-  if (hour < 12) return '🌅 Good morning Tech Agents!';
-  if (hour < 18) return '🌞 Good afternoon Tech Agents!';
-  return '🌙 Good evening Tech Agents!';
+  if (hour < 12) return 'Good morning Tech Agents!';
+  if (hour < 18) return 'Good afternoon Tech Agents!';
+  return 'Good evening Tech Agents!';
 }
 
-// === Rotating Emojis ===
+// Rotating emojis
 const emojiThemes = [
   { chat: '🌼', ticket: '📩' },
   { chat: '🔮', ticket: '🧾' },
@@ -48,7 +39,7 @@ const emojiThemes = [
   { chat: '🍀', ticket: '📬' },
 ];
 
-// === Fixed Team Leaders ===
+// Team Leaders fixed structure
 const teamLeaders = {
   '02:00': { backend: 'Carmela', frontend: 'Krissy' },
   '04:00': { backend: 'Krissy', frontend: 'Carmela' },
@@ -59,7 +50,7 @@ const teamLeaders = {
   '00:00': { backend: 'Carmela', frontend: 'Krissy' },
 };
 
-// === Agent Shift Assignments ===
+// Agent shift structure
 const agentShifts = {
   '02:00': {
     chat: ['Zoe', 'Jean'],
@@ -87,26 +78,33 @@ const agentShifts = {
   }
 };
 
-// === Shift Announcement Logic ===
+// Post shift message
 async function postShiftMessage(time) {
   const { chat, ticket } = agentShifts[time] || {};
   const tl = teamLeaders[time] || {};
   const emoji = emojiThemes[Math.floor(Math.random() * emojiThemes.length)];
   const greeting = getGreeting(parseInt(time));
 
-  let message = `🧠 *Team Leader Assignment*\n🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}\n\n`;
-  message += `🕒 ${greeting}\n\n`;
-  if (chat && ticket) {
-    message += `${emoji.chat} *Chat Agents:* ${chat.join(', ')}\n`;
-    message += `${emoji.ticket} *Ticket Agents:* ${ticket.join(', ')}`;
-  } else {
-    message += '⚠️ No agent data found for this shift.';
+  if (tl.backend || tl.frontend) {
+    let message = `${greeting}\n\n`;
+    message += `🧠 *Team Leader Assignment*\n🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}`;
+    await replyToSlack('C0929GPUAAZ', message);
+    return;
   }
 
-  await replyToSlack(SLACK_CHANNEL_SUPPORT, message);
+  if (chat && ticket) {
+    let message = `${greeting}\n\n`;
+    message += `${emoji.chat} *Chat Agents:* ${chat.join(', ')}\n`;
+    message += `${emoji.ticket} *Ticket Agents:* ${ticket.join(', ')}`;
+    await replyToSlack('C0929GPUAAZ', message);
+    return;
+  }
+
+  let message = `${greeting}\n\n⚠️ No scheduled agents for this shift.`;
+  await replyToSlack('C0929GPUAAZ', message);
 }
 
-// === Auto Shift Scheduler (every minute) ===
+// Shift scheduler (24/7)
 const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
 setInterval(async () => {
   const now = new Date();
@@ -116,63 +114,13 @@ setInterval(async () => {
     console.log(`⏰ Posting shift message for ${currentTime}`);
     await postShiftMessage(currentTime);
   }
-}, 60000);
+}, 60000); // every minute check
 
-// === Slack Events: Break Handling via @Nova Mentions ===
-app.post('/slack/events', async (req, res) => {
-  const event = req.body.event;
-  res.sendStatus(200);
-  if (!event || event.type !== 'app_mention') return;
-
-  const userId = event.user;
-  const channel = event.channel;
-  const now = new Date();
-
-  // Already on break?
-  if (currentBreaks[userId]) {
-    const remaining = Math.ceil((currentBreaks[userId] - now) / 60000);
-    await replyToSlack(channel, `🕒 <@${userId}>, you're already on break! ${remaining} minutes left.`);
-    return;
-  }
-
-  // Someone else is on break?
-  const otherId = Object.keys(currentBreaks)[0];
-  if (otherId) {
-    const remaining = Math.ceil((currentBreaks[otherId] - now) / 60000);
-    breakQueue.push({ userId, channel });
-    await replyToSlack(channel, `⏳ <@${userId}> you're queued for a break. ${remaining} minutes left before it's your turn.`);
-    return;
-  }
-
-  // Grant break
-  currentBreaks[userId] = new Date(now.getTime() + BREAK_DURATION);
-  await replyToSlack(channel, `✅ <@${userId}> you're on a 30-minute break now. Enjoy!`);
-
-  setTimeout(async () => {
-    delete currentBreaks[userId];
-    await replyToSlack(channel, `⏰ <@${userId}>, your break is over!`);
-
-    // Grant next in queue
-    if (breakQueue.length > 0) {
-      const next = breakQueue.shift();
-      currentBreaks[next.userId] = new Date(Date.now() + BREAK_DURATION);
-      await replyToSlack(next.channel, `🔁 <@${next.userId}> it's your turn! Enjoy your 30-minute break.`);
-
-      setTimeout(async () => {
-        delete currentBreaks[next.userId];
-        await replyToSlack(next.channel, `⏰ <@${next.userId}> your break is over!`);
-      }, BREAK_DURATION);
-    }
-  }, BREAK_DURATION);
-});
-
-// === Health Check ===
+// Health check
 app.get('/', (req, res) => {
   res.send('Nova is up and running!');
 });
 
-// === Start App ===
 app.listen(PORT, () => {
   console.log(`✅ Nova is live on port ${PORT}`);
 });
-
