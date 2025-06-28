@@ -10,7 +10,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Post to Slack
+// Slack helpers
 async function replyToSlack(channel, message) {
   await axios.post("https://slack.com/api/chat.postMessage", {
     channel,
@@ -23,7 +23,7 @@ async function replyToSlack(channel, message) {
   });
 }
 
-// Break logic (keep existing)
+// Break logic
 const activeBreaks = {};
 const breakHistory = {};
 const breakQueue = [];
@@ -38,26 +38,25 @@ function getNovaDay() {
 async function handleBreak(userId, userName, channel) {
   const today = getNovaDay();
   if (breakHistory[userId] === today) {
-    return replyToSlack(channel, `❌ <@${userId}>, you've already had a break today.`);
+    return replyToSlack(channel, `❌ ${userName}, you've already had a break today.`);
   }
   if (activeBreaks[userId]) {
     const min = Math.ceil((activeBreaks[userId] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're already on break! ${min} min left.`);
+    return replyToSlack(channel, `⏳ ${userName}, you're already on break! ${min} min left.`);
   }
   if (Object.keys(activeBreaks).length > 0) {
     breakQueue.push({ userId, userName, channel });
     const [curr] = Object.keys(activeBreaks);
     const min = Math.ceil((activeBreaks[curr] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're queued. ${min} min left before your turn.`);
+    return replyToSlack(channel, `⏳ ${userName}, you're queued. ${min} min left before your turn.`);
   }
   const end = Date.now() + 30 * 60000;
   activeBreaks[userId] = end;
   breakHistory[userId] = today;
-  replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 min!`);
-
+  replyToSlack(channel, `✅ Break granted to ${userName}! Enjoy 30 min!`);
   setTimeout(() => {
     delete activeBreaks[userId];
-    replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
+    replyToSlack(channel, `🕒 ${userName}, your break is over!`);
     if (breakQueue.length) {
       const next = breakQueue.shift();
       handleBreak(next.userId, next.userName, next.channel);
@@ -67,16 +66,14 @@ async function handleBreak(userId, userName, channel) {
 
 // Slack commands
 app.post("/slack/commands", async (req, res) => {
-  const { command, channel_id, user_id } = req.body;
-
+  const { command, channel_id, user_id, trigger_id } = req.body;
   if (command === "/nova_help") {
     await replyToSlack(channel_id, `📝 Nova Help:\n/nova_schedule_today - Show today’s schedule\n/nova_schedule_week - Show this week’s schedule\n/nova_update_shift - Update shift dynamically`);
     return res.send();
   }
-
   if (command === "/nova_update_shift") {
     await axios.post("https://slack.com/api/views.open", {
-      trigger_id: req.body.trigger_id,
+      trigger_id,
       view: buildUpdateModal(user_id),
     }, {
       headers: {
@@ -86,14 +83,30 @@ app.post("/slack/commands", async (req, res) => {
     });
     return res.send();
   }
-
   res.send("Unknown command");
 });
 
-// Modal builder
 function buildUpdateModal(userId) {
-  const isManager = [/* list of manager Slack IDs */].includes(userId);
-
+  const managers = ['U092ABHUREW'];
+  const teamLeaders = []; // Add TL IDs as needed
+  const isManager = managers.includes(userId);
+  const isTeamLeader = teamLeaders.includes(userId);
+  if (!isManager && !isTeamLeader) {
+    return {
+      type: "modal",
+      title: { type: "plain_text", text: "Update Shift" },
+      close: { type: "plain_text", text: "Close" },
+      blocks: [
+        { type: "section", text: { type: "plain_text", text: "🚫 You are not authorized to update shifts." } }
+      ]
+    };
+  }
+  const typeOptions = isManager ? [
+    { text: { type: "plain_text", text: "Agent" }, value: "agent" },
+    { text: { type: "plain_text", text: "Team leader" }, value: "team_leader" }
+  ] : [
+    { text: { type: "plain_text", text: "Agent" }, value: "agent" }
+  ];
   return {
     type: "modal",
     callback_id: "update_shift_modal",
@@ -101,31 +114,23 @@ function buildUpdateModal(userId) {
     submit: { type: "plain_text", text: "Submit" },
     close: { type: "plain_text", text: "Cancel" },
     blocks: [
-      ...(isManager ? [
-        {
-          type: "input",
-          block_id: "type_block",
-          label: { type: "plain_text", text: "Select type" },
-          element: {
-            type: "static_select",
-            action_id: "type_select",
-            options: [
-              { text: { type: "plain_text", text: "Agent" }, value: "agent" },
-              { text: { type: "plain_text", text: "Team leader" }, value: "team_leader" },
-            ]
-          }
+      ...(isManager ? [{
+        type: "input",
+        block_id: "type_block",
+        label: { type: "plain_text", text: "Select type" },
+        element: {
+          type: "static_select",
+          action_id: "type_select",
+          options: typeOptions
         }
-      ] : []),
+      }] : []),
       {
         type: "input",
         block_id: "name_block",
         label: { type: "plain_text", text: "Select name" },
         element: {
-          type: "static_select",
-          action_id: "name_select",
-          options: [
-            // Dynamically fill with agent or TL names as per type
-          ]
+          type: "plain_text_input",
+          action_id: "name_input"
         }
       },
       {
@@ -133,11 +138,8 @@ function buildUpdateModal(userId) {
         block_id: "time_block",
         label: { type: "plain_text", text: "Select time frame" },
         element: {
-          type: "static_select",
-          action_id: "time_select",
-          options: [
-            // Dynamically fill timeframes as per type
-          ]
+          type: "plain_text_input",
+          action_id: "time_input"
         }
       },
       {
@@ -145,17 +147,21 @@ function buildUpdateModal(userId) {
         block_id: "role_block",
         label: { type: "plain_text", text: "Select role" },
         element: {
-          type: "static_select",
-          action_id: "role_select",
-          options: [
-            // Dynamically fill roles as per type
-          ]
+          type: "plain_text_input",
+          action_id: "role_input"
         }
       }
     ]
   };
 }
 
-// TODO: Add interaction handler and DB insert logic here
+app.post("/slack/events", async (req, res) => {
+  const { type, event } = req.body;
+  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
+  if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
+    await handleBreak(event.user, `<@${event.user}>`, event.channel);
+  }
+  res.sendStatus(200);
+});
 
 app.listen(PORT, () => console.log(`✅ Nova listening on ${PORT}`));
