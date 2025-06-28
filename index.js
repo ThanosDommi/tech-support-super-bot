@@ -116,27 +116,32 @@ app.post("/slack/commands", async (req, res) => {
 });
 
 app.post("/slack/interactivity", async (req, res) => {
-  try {
-    const payload = JSON.parse(req.body.payload);
-    res.send(); // Respond immediately to Slack
+  const payload = JSON.parse(req.body.payload);
 
-    if (payload.type === "view_submission") {
-      const values = payload.view.state.values;
-      const name = values.name_block.name_select.selected_option.value;
-      const date = values.date_block.date_select.selected_date;
-      const time = values.time_block.time_select.selected_option.value;
-      const role = values.role_block.role_select.selected_option.value;
+  if (payload.type === "view_submission") {
+    const values = payload.view.state.values;
+    const name = values.name_block.name_select.selected_option.value;
+    const date = values.date_block.date_select.selected_date;
+    const time = values.time_block.time_select.selected_option.value;
+    const role = values.role_block.role_select.selected_option.value;
 
+    try {
       await pool.query(
         "INSERT INTO agent_shifts (shift_date, shift_time, role, name, updated_by, reason, created_at) VALUES ($1, $2, $3, $4, 'slack', 'manual update', NOW())",
         [date, time, role, name]
       );
 
-      await replyToSlack(payload.user.id, `✅ Shift updated for *${name}* on *${date}* at *${time}* as *${role}*.`);
+      await replyToSlack("C092H86AJ2J", `✅ Shift updated for *${name}* on *${date}*, *${time}*, role: *${role}*.`);
+
+      return res.send({ response_action: "clear" });
+    } catch (err) {
+      console.error("DB insert error:", err);
+      await replyToSlack("C092H86AJ2J", `❌ Failed to update shift for *${name}*. Please check logs.`);
+      return res.send({ response_action: "clear" });
     }
-  } catch (err) {
-    console.error("Error handling interactivity:", err);
   }
+
+  res.send();
 });
 
 function buildAgentModal() {
