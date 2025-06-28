@@ -10,7 +10,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Utility: Post to Slack
+// Post to Slack
 async function replyToSlack(channel, message) {
   await axios.post('https://slack.com/api/chat.postMessage', {
     channel,
@@ -23,51 +23,48 @@ async function replyToSlack(channel, message) {
   });
 }
 
-// Break logic (as you had it)
+// Emoji rotation
+const emojiThemes = [
+  { chat: '🌼', ticket: '📩' },
+  { chat: '🔮', ticket: '🧾' },
+  { chat: '🍭', ticket: '📪' },
+  { chat: '🍀', ticket: '📬' }
+];
+
+// Break logic
 const activeBreaks = {};
 const breakHistory = {};
 const breakQueue = [];
 
 function getNovaDay() {
   const now = new Date();
-  const local = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-  if (local.getHours() < 2) local.setDate(local.getDate() - 1);
-  return local.toISOString().split('T')[0];
-}
-
-function calcEndTime(start) {
-  const [h, m] = start.split(':').map(Number);
-  const endHour = (h + 2) % 24;
-  return `${String(endHour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const israel = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  if (israel.getHours() < 2) israel.setDate(israel.getDate() - 1);
+  return israel.toISOString().split('T')[0];
 }
 
 async function handleBreak(userId, userName, channel) {
   const today = getNovaDay();
-
   if (breakHistory[userId] === today) {
-    return replyToSlack(channel, `❌ <@${userId}>, you've already had a break today.`);
+    return replyToSlack(channel, `❌ ${userName}, you've already had a break today.`);
   }
-
   if (activeBreaks[userId]) {
     const min = Math.ceil((activeBreaks[userId] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're already on break! ${min} min left.`);
+    return replyToSlack(channel, `⏳ ${userName}, you're already on break! ${min} min left.`);
   }
-
   if (Object.keys(activeBreaks).length > 0) {
     breakQueue.push({ userId, userName, channel });
     const [curr] = Object.keys(activeBreaks);
     const min = Math.ceil((activeBreaks[curr] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're queued. ${min} min left before your turn.`);
+    return replyToSlack(channel, `⏳ ${userName}, queued. ${min} min left before your turn.`);
   }
-
   const end = Date.now() + 30 * 60000;
   activeBreaks[userId] = end;
   breakHistory[userId] = today;
-  replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 min!`);
-
+  replyToSlack(channel, `✅ Break granted to ${userName}! 30 min!`);
   setTimeout(() => {
     delete activeBreaks[userId];
-    replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
+    replyToSlack(channel, `🕒 ${userName}, break over!`);
     if (breakQueue.length) {
       const next = breakQueue.shift();
       handleBreak(next.userId, next.userName, next.channel);
@@ -75,99 +72,54 @@ async function handleBreak(userId, userName, channel) {
   }, 30 * 60000);
 }
 
-// Slack events
-app.post('/slack/events', async (req, res) => {
-  const { type, event } = req.body;
-  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
+// Rotation logic
+function getWeekNumber() {
+  const now = new Date();
+  const janFirst = new Date(now.getFullYear(), 0, 1);
+  return Math.ceil((((now - janFirst) / 86400000) + 1) / 7);
+}
 
-  if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
-    await handleBreak(event.user, `<@${event.user}>`, event.channel);
-  }
-
-  res.sendStatus(200);
-});
+function determineRole(shiftTime, week) {
+  const defaultRole = shiftTime === '18:00-02:00' ? 'TICKET' : 'CHAT';
+  if (week % 2 === 0) return defaultRole;
+  return defaultRole === 'TICKET' ? 'CHAT' : 'TICKET';
+}
 
 // Slack commands
 app.post('/slack/commands', async (req, res) => {
   const { command, channel_id } = req.body;
-
   if (command === '/nova_schedule_today') {
-    await postShiftMessageToday(channel_id);
+    const today = new Date().toISOString().split('T')[0];
+    const week = getWeekNumber();
+    const emoji = emojiThemes[Math.floor(Math.random() * emojiThemes.length)];
+    const agents = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_time, name');
+    let msg = `:calendar_spiral: *Today’s Schedule (${today})*\n`;
+    agents.rows.forEach(r => {
+      const role = determineRole(r.shift_time, week);
+      const icon = role === 'CHAT' ? emoji.chat : emoji.ticket;
+      msg += `${icon} ${role} | ${r.name} | ${r.shift_time}\n`;
+    });
+    await replyToSlack(channel_id, msg);
     return res.send();
   }
-
-  if (command === '/nova_schedule_week') {
-    await postShiftMessageWeek(channel_id);
-    return res.send();
-  }
-
   if (command === '/nova_help') {
-    await replyToSlack(channel_id, `📝 Nova Help:\n/nova_schedule_today - Show today’s schedule\n/nova_schedule_week - Show this week’s schedule\n/nova_update_shift - Update shift dynamically`);
+    await replyToSlack(channel_id, `📝 Nova Help:\n/nova_schedule_today - Show today’s schedule with rotation`);
     return res.send();
   }
-
-  if (command === '/nova_update_shift') {
-    await replyToSlack(channel_id, `⚡ Shift update functionality coming soon!`);
-    return res.send();
-  }
-
   res.send('Unknown command');
 });
 
-// Updated today shift
-async function postShiftMessageToday(channel) {
-  const today = getNovaDay();
-  const agents = await pool.query('SELECT * FROM agent_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
-  const tls = await pool.query('SELECT * FROM tl_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
-
-  let msg = `📅 *Today’s Schedule (${today})*`;
-
-  if (agents.rows.length === 0 && tls.rows.length === 0) {
-    msg += `\n_No shifts scheduled for today._`;
-  } else {
-    tls.rows.forEach(r => {
-      const start = r.shift_time.slice(0,5);
-      const end = calcEndTime(start);
-      msg += `\n${start}-${end} | ${r.role.toUpperCase()} TL | ${r.name}`;
-    });
-    agents.rows.forEach(r => {
-      const start = r.shift_time.slice(0,5);
-      const end = calcEndTime(start);
-      msg += `\n${start}-${end} | ${r.role.toUpperCase()} | ${r.name}`;
-    });
+// Slack events (break)
+app.post('/slack/events', async (req, res) => {
+  const { type, event } = req.body;
+  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
+  if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
+    await handleBreak(event.user, `<@${event.user}>`, event.channel);
   }
+  res.sendStatus(200);
+});
 
-  await replyToSlack(channel, msg);
-}
+// Health
+app.get('/', (req, res) => res.send('Nova is live with rotation + breaks + emojis!'));
 
-// Updated week shift
-async function postShiftMessageWeek(channel) {
-  const agents = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time');
-  const tls = await pool.query('SELECT * FROM tl_shifts ORDER BY shift_date, shift_time');
-
-  let msg = `📅 *Weekly Schedule*`;
-
-  if (agents.rows.length === 0 && tls.rows.length === 0) {
-    msg += `\n_No shifts scheduled this week._`;
-  } else {
-    tls.rows.forEach(r => {
-      const date = r.shift_date.toISOString ? r.shift_date.toISOString().split('T')[0] : r.shift_date;
-      const start = r.shift_time.slice(0,5);
-      const end = calcEndTime(start);
-      msg += `\n${date} | ${start}-${end} | ${r.role.toUpperCase()} TL | ${r.name}`;
-    });
-    agents.rows.forEach(r => {
-      const date = r.shift_date.toISOString ? r.shift_date.toISOString().split('T')[0] : r.shift_date;
-      const start = r.shift_time.slice(0,5);
-      const end = calcEndTime(start);
-      msg += `\n${date} | ${start}-${end} | ${r.role.toUpperCase()} | ${r.name}`;
-    });
-  }
-
-  await replyToSlack(channel, msg);
-}
-
-// Health check
-app.get('/', (req, res) => res.send('Nova is live!'));
-
-app.listen(PORT, () => console.log(`✅ Nova listening on ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Nova live on ${PORT}`));
