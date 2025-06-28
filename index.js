@@ -23,9 +23,8 @@ const TEAM_LEADERS = [
   "Krissy Matias", "Márcio Rodrigues"
 ];
 
-const MANAGER_IDS = ["U092ABHUREW"];
+const MANAGER_IDS = ["U092ABHUREW"]; // Add more manager IDs if needed
 
-// Utility: Post to Slack
 async function replyToSlack(channel, message) {
   await axios.post("https://slack.com/api/chat.postMessage", {
     channel,
@@ -38,7 +37,6 @@ async function replyToSlack(channel, message) {
   });
 }
 
-// Break logic (with queue)
 const activeBreaks = {};
 const breakHistory = {};
 const breakQueue = [];
@@ -69,7 +67,6 @@ async function handleBreak(userId, userName, channel) {
   activeBreaks[userId] = end;
   breakHistory[userId] = today;
   replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 min!`);
-
   setTimeout(() => {
     delete activeBreaks[userId];
     replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
@@ -80,15 +77,26 @@ async function handleBreak(userId, userName, channel) {
   }, 30 * 60000);
 }
 
-// Slack commands
 app.post("/slack/commands", async (req, res) => {
   const { command, channel_id, user_id } = req.body;
 
-  if (command === "/nova_update_shift") {
-    const modal = MANAGER_IDS.includes(user_id) ? buildManagerModal() : buildAgentModal();
+  if (command === "/nova_update_agent_shift") {
     await axios.post("https://slack.com/api/views.open", {
       trigger_id: req.body.trigger_id,
-      view: modal
+      view: buildAgentModal(),
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+    return res.send();
+  }
+
+  if (command === "/nova_update_tl_shift" && MANAGER_IDS.includes(user_id)) {
+    await axios.post("https://slack.com/api/views.open", {
+      trigger_id: req.body.trigger_id,
+      view: buildTLModal(),
     }, {
       headers: {
         Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
@@ -104,7 +112,7 @@ app.post("/slack/commands", async (req, res) => {
 function buildAgentModal() {
   return {
     type: "modal",
-    callback_id: "update_shift_agent",
+    callback_id: "agent_shift_modal",
     title: { type: "plain_text", text: "Update Agent Shift" },
     submit: { type: "plain_text", text: "Submit" },
     close: { type: "plain_text", text: "Cancel" },
@@ -116,14 +124,20 @@ function buildAgentModal() {
         element: {
           type: "static_select",
           action_id: "name_select",
-          options: AGENTS.map(name => ({ text: { type: "plain_text", text: name }, value: name }))
+          options: AGENTS.map(name => ({
+            text: { type: "plain_text", text: name },
+            value: name
+          }))
         }
       },
       {
         type: "input",
         block_id: "date_block",
         label: { type: "plain_text", text: "Select date" },
-        element: { type: "datepicker", action_id: "date_select" }
+        element: {
+          type: "datepicker",
+          action_id: "date_select"
+        }
       },
       {
         type: "input",
@@ -132,8 +146,10 @@ function buildAgentModal() {
         element: {
           type: "static_select",
           action_id: "time_select",
-          options: ["10:00-14:00", "14:00-18:00", "18:00-22:00", "22:00-02:00", "02:00-06:00", "06:00-10:00"]
-            .map(t => ({ text: { type: "plain_text", text: t }, value: t }))
+          options: ["10:00-14:00", "14:00-18:00", "18:00-22:00", "22:00-02:00", "02:00-06:00", "06:00-10:00"].map(t => ({
+            text: { type: "plain_text", text: t },
+            value: t
+          }))
         }
       },
       {
@@ -143,17 +159,20 @@ function buildAgentModal() {
         element: {
           type: "static_select",
           action_id: "role_select",
-          options: ["Chat", "Ticket"].map(r => ({ text: { type: "plain_text", text: r }, value: r.toLowerCase() }))
+          options: [
+            { text: { type: "plain_text", text: "Chat" }, value: "chat" },
+            { text: { type: "plain_text", text: "Ticket" }, value: "ticket" }
+          ]
         }
       }
     ]
   };
 }
 
-function buildManagerModal() {
+function buildTLModal() {
   return {
     type: "modal",
-    callback_id: "update_shift_tl",
+    callback_id: "tl_shift_modal",
     title: { type: "plain_text", text: "Update TL Shift" },
     submit: { type: "plain_text", text: "Submit" },
     close: { type: "plain_text", text: "Cancel" },
@@ -165,14 +184,20 @@ function buildManagerModal() {
         element: {
           type: "static_select",
           action_id: "name_select",
-          options: TEAM_LEADERS.map(name => ({ text: { type: "plain_text", text: name }, value: name }))
+          options: TEAM_LEADERS.map(name => ({
+            text: { type: "plain_text", text: name },
+            value: name
+          }))
         }
       },
       {
         type: "input",
         block_id: "date_block",
         label: { type: "plain_text", text: "Select date" },
-        element: { type: "datepicker", action_id: "date_select" }
+        element: {
+          type: "datepicker",
+          action_id: "date_select"
+        }
       },
       {
         type: "input",
@@ -181,8 +206,10 @@ function buildManagerModal() {
         element: {
           type: "static_select",
           action_id: "time_select",
-          options: ["00:00-04:00", "04:00-08:00", "08:00-12:00", "12:00-16:00", "16:00-20:00", "20:00-00:00"]
-            .map(t => ({ text: { type: "plain_text", text: t }, value: t }))
+          options: ["00:00-04:00", "04:00-08:00", "08:00-12:00", "12:00-16:00", "16:00-20:00", "20:00-00:00"].map(t => ({
+            text: { type: "plain_text", text: t },
+            value: t
+          }))
         }
       },
       {
@@ -192,7 +219,10 @@ function buildManagerModal() {
         element: {
           type: "static_select",
           action_id: "role_select",
-          options: ["Backend", "Frontend"].map(r => ({ text: { type: "plain_text", text: r }, value: r.toLowerCase() }))
+          options: [
+            { text: { type: "plain_text", text: "Backend" }, value: "backend" },
+            { text: { type: "plain_text", text: "Frontend" }, value: "frontend" }
+          ]
         }
       }
     ]
