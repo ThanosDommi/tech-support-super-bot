@@ -1,13 +1,15 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const { Pool } = require('pg');
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Utility: Post to a Slack channel
 async function replyToSlack(channel, message) {
   try {
     await axios.post('https://slack.com/api/chat.postMessage', {
@@ -24,14 +26,12 @@ async function replyToSlack(channel, message) {
   }
 }
 
-// Greeting logic
 function getGreeting(hour, isAgentShift) {
   if (hour < 12) return isAgentShift ? 'Good morning Agents!' : 'Good morning Team Leaders!';
   if (hour < 18) return isAgentShift ? 'Good afternoon Agents!' : 'Good afternoon Team Leaders!';
   return isAgentShift ? 'Good evening Agents!' : 'Good evening Team Leaders!';
 }
 
-// Rotating emojis
 const emojiThemes = [
   { chat: '🌼', ticket: '📩' },
   { chat: '🔮', ticket: '🧾' },
@@ -39,52 +39,35 @@ const emojiThemes = [
   { chat: '🍀', ticket: '📬' },
 ];
 
-// Team Leaders
-const teamLeaders = {
-  '02:00': { backend: 'Carmela', frontend: 'Krissy' },
-  '04:00': { backend: 'Krissy', frontend: 'Carmela' },
-  '08:00': { backend: 'George', frontend: 'Giannis' },
-  '12:00': { backend: 'Giannis', frontend: 'George' },
-  '16:00': { backend: 'Barbara', frontend: 'Marcio' },
-  '20:00': { backend: 'Marcio', frontend: 'Barbara' },
-  '00:00': { backend: 'Carmela', frontend: 'Krissy' },
-};
-
-// Agent shifts
-const agentShifts = {
-  '02:00': { chat: ['Zoe', 'Jean'], ticket: ['Mae Jean', 'Ella'] },
-  '06:00': { chat: ['Krizza', 'Lorain'], ticket: ['Michael', 'Dimitris'] },
-  '10:00': { chat: ['Angelica', 'Stelios', 'Thanos'], ticket: ['Christina Z.', 'Aggelos', 'Thanos'] },
-  '14:00': { chat: ['Cezamarie', 'Jean', 'Thanos'], ticket: ['Lorain', 'Ella', 'Thanos'] },
-  '18:00': { chat: ['Krizza', 'Zoe', 'Thanos'], ticket: ['Michael', 'Jean', 'Thanos'] },
-  '22:00': { chat: ['Angelica', 'Jean', 'Thanos'], ticket: ['Christina Z.', 'Ella', 'Thanos'] }
-};
-
-// Post shift message
 async function postShiftMessage(time) {
-  const { chat, ticket } = agentShifts[time] || {};
-  const tl = teamLeaders[time] || {};
+  const today = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }).split(',')[0];
+  const resAgents = await pool.query("SELECT * FROM agent_shifts WHERE shift_time = $1 AND shift_date = $2", [time, today]);
+  const resTLs = await pool.query("SELECT * FROM tl_shifts WHERE shift_time = $1 AND shift_date = $2", [time, today]);
+
   const emoji = emojiThemes[Math.floor(Math.random() * emojiThemes.length)];
-  const isAgentShift = chat || ticket;
-  const isTLShift = tl.backend || tl.frontend;
-  const greeting = getGreeting(parseInt(time), isAgentShift);
+  const isAgentShift = resAgents.rowCount > 0;
+  const isTLShift = resTLs.rowCount > 0;
+  const hour = parseInt(time.split(':')[0]);
+  const greeting = getGreeting(hour, isAgentShift);
 
   let message = `${greeting}\n\n`;
 
-  if (isAgentShift && isTLShift) {
-    message += `${emoji.chat} *Chat Agents:* ${chat?.join(', ') || 'None'}\n`;
-    message += `${emoji.ticket} *Ticket Agents:* ${ticket?.join(', ') || 'None'}`;
-  } else if (isAgentShift) {
-    message += `${emoji.chat} *Chat Agents:* ${chat?.join(', ') || 'None'}\n`;
-    message += `${emoji.ticket} *Ticket Agents:* ${ticket?.join(', ') || 'None'}`;
-  } else if (isTLShift) {
-    message += `🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}`;
+  if (isAgentShift) {
+    const chatAgents = resAgents.rows.filter(r => r.role === 'chat').map(r => r.name).join(', ') || 'None';
+    const ticketAgents = resAgents.rows.filter(r => r.role === 'ticket').map(r => r.name).join(', ') || 'None';
+    message += `${emoji.chat} *Chat Agents:* ${chatAgents}\n`;
+    message += `${emoji.ticket} *Ticket Agents:* ${ticketAgents}\n`;
+  }
+  
+  if (isTLShift) {
+    const backend = resTLs.rows.find(r => r.role === 'backend')?.name || 'TBD';
+    const frontend = resTLs.rows.find(r => r.role === 'frontend')?.name || 'TBD';
+    message += `🧠 Backend TL: ${backend}\n💬 Frontend TL: ${frontend}`;
   }
 
   await replyToSlack('C0929GPUAAZ', message);
 }
 
-// Break Logic
 const breakTracker = {};
 const activeBreaks = {};
 const breakQueue = [];
@@ -130,7 +113,6 @@ async function handleBreakRequest(userId, userName, channel) {
   }, 30 * 60000);
 }
 
-// Slack Event
 app.post('/slack/events', async (req, res) => {
   const { type, event } = req.body;
 
@@ -153,7 +135,6 @@ app.post('/slack/events', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Auto Scheduler
 const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
 setInterval(async () => {
   const now = new Date();
@@ -165,7 +146,6 @@ setInterval(async () => {
   }
 }, 60000);
 
-// Health check
 app.get('/', (req, res) => {
   res.send('Nova is up and running!');
 });
@@ -173,3 +153,4 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Nova is live on port ${PORT}`);
 });
+
