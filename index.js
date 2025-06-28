@@ -69,6 +69,18 @@ async function handleBreak(userId, userName, channel) {
   }, 30 * 60000);
 }
 
+// Slack events
+app.post('/slack/events', async (req, res) => {
+  const { type, event } = req.body;
+  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
+
+  if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
+    await handleBreak(event.user, `<@${event.user}>`, event.channel);
+  }
+
+  res.sendStatus(200);
+});
+
 // Slack commands
 app.post('/slack/commands', async (req, res) => {
   const { command, channel_id } = req.body;
@@ -98,28 +110,28 @@ app.post('/slack/commands', async (req, res) => {
 
 async function postShiftMessageToday(channel) {
   const today = getNovaDay();
-  const agents = await pool.query('SELECT * FROM agent_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
-  if (agents.rows.length === 0) {
-    return replyToSlack(channel, `:calendar_spiral: *Today’s Schedule (${today})*\n_No shifts scheduled for today._`);
+  const result = await pool.query('SELECT * FROM agent_shifts WHERE shift_date = $1 ORDER BY shift_time, role', [today]);
+
+  let msg = `:date: *Today’s Schedule (${today})*\n`;
+  if (result.rows.length === 0) {
+    msg += '_No shifts scheduled for today._';
+  } else {
+    result.rows.forEach(r => {
+      msg += `${r.role.toUpperCase()} | ${r.name} | ${r.shift_time} - ${r.shift_end_time}\n`;
+    });
   }
-  let msg = `:calendar_spiral: *Today’s Schedule (${today})*\n`;
-  agents.rows.forEach(r => {
-    const roleIcon = ':bust_in_silhouette:';
-    msg += `${roleIcon} ${r.role.toUpperCase()} | ${r.name} | ${r.shift_time} - ${r.shift_end_time}\n`;
-  });
+
   await replyToSlack(channel, msg);
 }
 
 async function postShiftMessageWeek(channel) {
-  const agents = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time');
-  if (agents.rows.length === 0) {
-    return replyToSlack(channel, `:calendar_spiral: *Weekly Schedule*\n_No shifts scheduled._`);
-  }
-  let msg = `:calendar_spiral: *Weekly Schedule*\n`;
-  agents.rows.forEach(r => {
-    const roleIcon = ':bust_in_silhouette:';
-    msg += `${r.shift_date} | ${roleIcon} ${r.role.toUpperCase()} | ${r.name} | ${r.shift_time} - ${r.shift_end_time}\n`;
+  const result = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time, role');
+
+  let msg = `:date: *Weekly Schedule*\n`;
+  result.rows.forEach(r => {
+    msg += `${r.shift_date} | ${r.shift_time} - ${r.shift_end_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
   });
+
   await replyToSlack(channel, msg);
 }
 
