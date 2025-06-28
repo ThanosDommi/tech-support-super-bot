@@ -19,13 +19,13 @@ const AGENTS = [
 ];
 
 const TEAM_LEADERS = [
-  "Barbara de Melo Lima", "Carmela Sedanto", "George Marios Alexakis", "Giannis Kiriakou",
-  "Krissy Matias", "Márcio Rodrigues"
+  "Barbara de Melo Lima", "Carmela Sedanto", "George Marios Alexakis",
+  "Giannis Kiriakou", "Krissy Matias", "Márcio Rodrigues"
 ];
 
-const TL_IDS = ["U092ABHUREW"]; // Add other team leader or manager IDs as needed
+const MANAGER_IDS = ["U092ABHUREW"]; // Add manager/team leader Slack IDs here if needed
 
-// Utility: Post to Slack
+// Utility: post to Slack
 async function replyToSlack(channel, message) {
   await axios.post("https://slack.com/api/chat.postMessage", {
     channel,
@@ -38,7 +38,7 @@ async function replyToSlack(channel, message) {
   });
 }
 
-// Break logic (with queue)
+// Break logic with queue
 const activeBreaks = {};
 const breakHistory = {};
 const breakQueue = [];
@@ -73,15 +73,24 @@ async function handleBreak(userId, userName, channel) {
   setTimeout(() => {
     delete activeBreaks[userId];
     replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
-    if (breakQueue.length) {
+    if (breakQueue.length > 0) {
       const next = breakQueue.shift();
       handleBreak(next.userId, next.userName, next.channel);
     }
   }, 30 * 60000);
 }
 
+// Slack commands
 app.post("/slack/commands", async (req, res) => {
   const { command, channel_id, user_id } = req.body;
+
+  if (command === "/nova_help") {
+    await replyToSlack(channel_id, `📝 Nova Help:
+• /nova_schedule_today — show today’s schedule
+• /nova_schedule_week — show this week’s schedule
+• /nova_update_shift — update shift dynamically`);
+    return res.send();
+  }
 
   if (command === "/nova_update_shift") {
     await axios.post("https://slack.com/api/views.open", {
@@ -99,17 +108,18 @@ app.post("/slack/commands", async (req, res) => {
   res.send("Unknown command");
 });
 
+// Build update modal
 function buildUpdateModal(userId) {
-  const isManagerOrTL = TL_IDS.includes(userId);
+  const isManager = MANAGER_IDS.includes(userId);
 
   return {
     type: "modal",
     callback_id: "update_shift_modal",
-    title: { type: "plain_text", text: "Update Shift" },
+    title: { type: "plain_text", text: "Update shift" },
     submit: { type: "plain_text", text: "Submit" },
     close: { type: "plain_text", text: "Cancel" },
     blocks: [
-      {
+      ...(isManager ? [{
         type: "input",
         block_id: "type_block",
         label: { type: "plain_text", text: "Select type" },
@@ -118,10 +128,10 @@ function buildUpdateModal(userId) {
           action_id: "type_select",
           options: [
             { text: { type: "plain_text", text: "Agent" }, value: "agent" },
-            ...(isManagerOrTL ? [{ text: { type: "plain_text", text: "Team leader" }, value: "team_leader" }] : [])
+            { text: { type: "plain_text", text: "Team leader" }, value: "team_leader" }
           ]
         }
-      },
+      }] : []),
       {
         type: "input",
         block_id: "name_block",
@@ -129,7 +139,7 @@ function buildUpdateModal(userId) {
         element: {
           type: "static_select",
           action_id: "name_select",
-          options: (isManagerOrTL ? TEAM_LEADERS : AGENTS).map(name => ({
+          options: (isManager ? AGENTS.concat(TEAM_LEADERS) : AGENTS).map(name => ({
             text: { type: "plain_text", text: name },
             value: name
           }))
@@ -151,14 +161,21 @@ function buildUpdateModal(userId) {
         element: {
           type: "static_select",
           action_id: "time_select",
-          options: (isManagerOrTL ? [
-            "00:00-4:00", "4:00-8:00", "8:00-12:00", "12:00-16:00", "16:00-20:00", "20:00-00:00"
+          options: (isManager ? [
+            { text: { type: "plain_text", text: "00:00-04:00" }, value: "00:00-04:00" },
+            { text: { type: "plain_text", text: "04:00-08:00" }, value: "04:00-08:00" },
+            { text: { type: "plain_text", text: "08:00-12:00" }, value: "08:00-12:00" },
+            { text: { type: "plain_text", text: "12:00-16:00" }, value: "12:00-16:00" },
+            { text: { type: "plain_text", text: "16:00-20:00" }, value: "16:00-20:00" },
+            { text: { type: "plain_text", text: "20:00-00:00" }, value: "20:00-00:00" }
           ] : [
-            "10:00-14:00", "14:00-18:00", "18:00-22:00", "22:00-2:00", "2:00-6:00", "6:00-10:00"
-          ]).map(tf => ({
-            text: { type: "plain_text", text: tf },
-            value: tf
-          }))
+            { text: { type: "plain_text", text: "10:00-14:00" }, value: "10:00-14:00" },
+            { text: { type: "plain_text", text: "14:00-18:00" }, value: "14:00-18:00" },
+            { text: { type: "plain_text", text: "18:00-22:00" }, value: "18:00-22:00" },
+            { text: { type: "plain_text", text: "22:00-02:00" }, value: "22:00-02:00" },
+            { text: { type: "plain_text", text: "02:00-06:00" }, value: "02:00-06:00" },
+            { text: { type: "plain_text", text: "06:00-10:00" }, value: "06:00-10:00" }
+          ])
         }
       },
       {
@@ -168,12 +185,12 @@ function buildUpdateModal(userId) {
         element: {
           type: "static_select",
           action_id: "role_select",
-          options: (isManagerOrTL ? [
-            { text: { type: "plain_text", text: "Backend" }, value: "Backend" },
-            { text: { type: "plain_text", text: "Frontend" }, value: "Frontend" }
+          options: (isManager ? [
+            { text: { type: "plain_text", text: "Backend" }, value: "backend" },
+            { text: { type: "plain_text", text: "Frontend" }, value: "frontend" }
           ] : [
-            { text: { type: "plain_text", text: "Chat" }, value: "Chat" },
-            { text: { type: "plain_text", text: "Ticket" }, value: "Ticket" }
+            { text: { type: "plain_text", text: "Chat" }, value: "chat" },
+            { text: { type: "plain_text", text: "Ticket" }, value: "ticket" }
           ])
         }
       }
