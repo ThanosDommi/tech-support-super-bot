@@ -10,58 +10,20 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// --- Utility to post to Slack ---
+// Utility: Post to Slack
 async function replyToSlack(channel, message) {
-  try {
-    await axios.post('https://slack.com/api/chat.postMessage', {
-      channel,
-      text: message,
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-    });
-  } catch (err) {
-    console.error('Slack error:', err);
-  }
+  await axios.post('https://slack.com/api/chat.postMessage', {
+    channel,
+    text: message,
+  }, {
+    headers: {
+      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+  });
 }
 
-// --- Scheduler ---
-const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
-
-async function postShiftMessage(time) {
-  const agentRes = await pool.query('SELECT * FROM agent_shifts WHERE shift_time = $1 AND shift_date = CURRENT_DATE', [time]);
-  const tlRes = await pool.query('SELECT * FROM tl_shifts WHERE shift_time = $1 AND shift_date = CURRENT_DATE', [time]);
-  const agents = agentRes.rows;
-  const tls = tlRes.rows;
-
-  let msg = `⏰ Shift Update for ${time} (Asia/Jerusalem)\n`;
-
-  if (agents.length) {
-    const chat = agents.filter(a => a.role === 'chat').map(a => a.name).join(', ') || 'None';
-    const ticket = agents.filter(a => a.role === 'ticket').map(a => a.name).join(', ') || 'None';
-    msg += `🌼 *Chat Agents:* ${chat}\n📩 *Ticket Agents:* ${ticket}\n`;
-  }
-
-  if (tls.length) {
-    const backend = tls.find(t => t.role === 'backend')?.name || 'TBD';
-    const frontend = tls.find(t => t.role === 'frontend')?.name || 'TBD';
-    msg += `🧠 *Backend TL:* ${backend}\n💬 *Frontend TL:* ${frontend}`;
-  }
-
-  await replyToSlack(process.env.SLACK_CHANNEL_ID, msg);
-}
-
-setInterval(async () => {
-  const now = new Date();
-  const time = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })).toTimeString().slice(0,5);
-  if (shiftTimes.includes(time)) {
-    await postShiftMessage(time);
-  }
-}, 60000);
-
-// --- Break Logic ---
+// Break logic (as you had it)
 const activeBreaks = {};
 const breakHistory = {};
 const breakQueue = [];
@@ -107,13 +69,10 @@ async function handleBreak(userId, userName, channel) {
   }, 30 * 60000);
 }
 
-// --- Slack endpoint ---
+// Slack events (break requests etc.)
 app.post('/slack/events', async (req, res) => {
   const { type, event } = req.body;
-
-  if (type === 'url_verification') {
-    return res.send({ challenge: req.body.challenge });
-  }
+  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
 
   if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
     await handleBreak(event.user, `<@${event.user}>`, event.channel);
@@ -122,7 +81,66 @@ app.post('/slack/events', async (req, res) => {
   res.sendStatus(200);
 });
 
+// Slack commands for shift management
+app.post('/slack/commands', async (req, res) => {
+  const { command, channel_id } = req.body;
+
+  if (command === '/nova_schedule_today') {
+    await postShiftMessageToday(channel_id);
+    return res.send();
+  }
+
+  if (command === '/nova_schedule_week') {
+    await postShiftMessageWeek(channel_id);
+    return res.send();
+  }
+
+  if (command === '/nova_help') {
+    await replyToSlack(channel_id, `📝 Nova Help:\n/nova_schedule_today - Show today’s schedule\n/nova_schedule_week - Show this week’s schedule\n/nova_update_shift - Update shift dynamically`);
+    return res.send();
+  }
+
+  if (command === '/nova_update_shift') {
+    await replyToSlack(channel_id, `⚡ Shift update functionality coming soon!`);
+    return res.send();
+  }
+
+  res.send('Unknown command');
+});
+
+// Example helpers (you can expand these based on your DB logic)
+async function postShiftMessageToday(channel) {
+  const today = getNovaDay();
+  const agents = await pool.query('SELECT * FROM agent_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
+  const tls = await pool.query('SELECT * FROM tl_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
+  let msg = `:calendar_spiral: *Today’s Schedule (${today})*\n`;
+
+  agents.rows.forEach(r => {
+    msg += `${r.shift_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
+  });
+  tls.rows.forEach(r => {
+    msg += `${r.shift_time} | ${r.role.toUpperCase()} TL | ${r.name}\n`;
+  });
+
+  await replyToSlack(channel, msg);
+}
+
+async function postShiftMessageWeek(channel) {
+  const agents = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time');
+  const tls = await pool.query('SELECT * FROM tl_shifts ORDER BY shift_date, shift_time');
+  let msg = `:calendar_spiral: *Weekly Schedule*\n`;
+
+  agents.rows.forEach(r => {
+    msg += `${r.shift_date} ${r.shift_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
+  });
+  tls.rows.forEach(r => {
+    msg += `${r.shift_date} ${r.shift_time} | ${r.role.toUpperCase()} TL | ${r.name}\n`;
+  });
+
+  await replyToSlack(channel, msg);
+}
+
 // Health check
 app.get('/', (req, res) => res.send('Nova is live!'));
 
-app.listen(PORT, () => console.log(`✅ Nova listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Nova listening on ${PORT}`));
