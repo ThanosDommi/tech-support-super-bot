@@ -131,14 +131,13 @@ app.post("/slack/interactivity", async (req, res) => {
         [date, time, role, name]
       );
 
-      await replyToSlack("C092H86AJ2J", `✅ Shift updated for *${name}* on *${date}*, *${time}*, role: *${role}*.`);
-
-      return res.send({ response_action: "clear" });
+      await replyToSlack("C092H86AJ2J", `✅ Successfully updated shift for *${name}* on *${date}* at *${time}* for *${role}*.`);
     } catch (err) {
       console.error("DB insert error:", err);
       await replyToSlack("C092H86AJ2J", `❌ Failed to update shift for *${name}*. Please check logs.`);
-      return res.send({ response_action: "clear" });
     }
+
+    return res.send({ response_action: "clear" });
   }
 
   res.send();
