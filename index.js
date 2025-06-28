@@ -35,6 +35,12 @@ function getNovaDay() {
   return local.toISOString().split('T')[0];
 }
 
+function calcEndTime(start) {
+  const [h, m] = start.split(':').map(Number);
+  const endHour = (h + 2) % 24;
+  return `${String(endHour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 async function handleBreak(userId, userName, channel) {
   const today = getNovaDay();
 
@@ -69,7 +75,7 @@ async function handleBreak(userId, userName, channel) {
   }, 30 * 60000);
 }
 
-// Slack events (break requests etc.)
+// Slack events
 app.post('/slack/events', async (req, res) => {
   const { type, event } = req.body;
   if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
@@ -81,7 +87,7 @@ app.post('/slack/events', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Slack commands for shift management
+// Slack commands
 app.post('/slack/commands', async (req, res) => {
   const { command, channel_id } = req.body;
 
@@ -108,34 +114,55 @@ app.post('/slack/commands', async (req, res) => {
   res.send('Unknown command');
 });
 
-// Example helpers (you can expand these based on your DB logic)
+// Updated today shift
 async function postShiftMessageToday(channel) {
   const today = getNovaDay();
   const agents = await pool.query('SELECT * FROM agent_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
   const tls = await pool.query('SELECT * FROM tl_shifts WHERE shift_date=$1 ORDER BY shift_time', [today]);
-  let msg = `:calendar_spiral: *Today’s Schedule (${today})*\n`;
 
-  agents.rows.forEach(r => {
-    msg += `${r.shift_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
-  });
-  tls.rows.forEach(r => {
-    msg += `${r.shift_time} | ${r.role.toUpperCase()} TL | ${r.name}\n`;
-  });
+  let msg = `📅 *Today’s Schedule (${today})*`;
+
+  if (agents.rows.length === 0 && tls.rows.length === 0) {
+    msg += `\n_No shifts scheduled for today._`;
+  } else {
+    tls.rows.forEach(r => {
+      const start = r.shift_time.slice(0,5);
+      const end = calcEndTime(start);
+      msg += `\n${start}-${end} | ${r.role.toUpperCase()} TL | ${r.name}`;
+    });
+    agents.rows.forEach(r => {
+      const start = r.shift_time.slice(0,5);
+      const end = calcEndTime(start);
+      msg += `\n${start}-${end} | ${r.role.toUpperCase()} | ${r.name}`;
+    });
+  }
 
   await replyToSlack(channel, msg);
 }
 
+// Updated week shift
 async function postShiftMessageWeek(channel) {
   const agents = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time');
   const tls = await pool.query('SELECT * FROM tl_shifts ORDER BY shift_date, shift_time');
-  let msg = `:calendar_spiral: *Weekly Schedule*\n`;
 
-  agents.rows.forEach(r => {
-    msg += `${r.shift_date} ${r.shift_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
-  });
-  tls.rows.forEach(r => {
-    msg += `${r.shift_date} ${r.shift_time} | ${r.role.toUpperCase()} TL | ${r.name}\n`;
-  });
+  let msg = `📅 *Weekly Schedule*`;
+
+  if (agents.rows.length === 0 && tls.rows.length === 0) {
+    msg += `\n_No shifts scheduled this week._`;
+  } else {
+    tls.rows.forEach(r => {
+      const date = r.shift_date.toISOString ? r.shift_date.toISOString().split('T')[0] : r.shift_date;
+      const start = r.shift_time.slice(0,5);
+      const end = calcEndTime(start);
+      msg += `\n${date} | ${start}-${end} | ${r.role.toUpperCase()} TL | ${r.name}`;
+    });
+    agents.rows.forEach(r => {
+      const date = r.shift_date.toISOString ? r.shift_date.toISOString().split('T')[0] : r.shift_date;
+      const start = r.shift_time.slice(0,5);
+      const end = calcEndTime(start);
+      msg += `\n${date} | ${start}-${end} | ${r.role.toUpperCase()} | ${r.name}`;
+    });
+  }
 
   await replyToSlack(channel, msg);
 }
