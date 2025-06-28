@@ -25,10 +25,10 @@ async function replyToSlack(channel, message) {
 }
 
 // Greeting logic
-function getGreeting(hour) {
-  if (hour < 12) return 'Good morning Tech Agents!';
-  if (hour < 18) return 'Good afternoon Tech Agents!';
-  return 'Good evening Tech Agents!';
+function getGreeting(hour, isAgentShift) {
+  if (hour < 12) return isAgentShift ? 'Good morning Agents!' : 'Good morning Team Leaders!';
+  if (hour < 18) return isAgentShift ? 'Good afternoon Agents!' : 'Good afternoon Team Leaders!';
+  return isAgentShift ? 'Good evening Agents!' : 'Good evening Team Leaders!';
 }
 
 // Rotating emojis
@@ -60,17 +60,16 @@ const agentShifts = {
   '22:00': { chat: ['Angelica', 'Jean', 'Thanos'], ticket: ['Christina Z.', 'Ella', 'Thanos'] }
 };
 
-// Shift message posting
+// Post shift message
 async function postShiftMessage(time) {
   const { chat, ticket } = agentShifts[time] || {};
   const tl = teamLeaders[time] || {};
   const emoji = emojiThemes[Math.floor(Math.random() * emojiThemes.length)];
-  const greeting = getGreeting(parseInt(time));
-
-  let message = `${greeting}\n\n`;
-
   const isAgentShift = chat || ticket;
   const isTLShift = tl.backend || tl.frontend;
+  const greeting = getGreeting(parseInt(time), isAgentShift);
+
+  let message = `${greeting}\n\n`;
 
   if (isAgentShift && isTLShift) {
     message += `${emoji.chat} *Chat Agents:* ${chat?.join(', ') || 'None'}\n`;
@@ -79,16 +78,16 @@ async function postShiftMessage(time) {
     message += `${emoji.chat} *Chat Agents:* ${chat?.join(', ') || 'None'}\n`;
     message += `${emoji.ticket} *Ticket Agents:* ${ticket?.join(', ') || 'None'}`;
   } else if (isTLShift) {
-    message += `🧠 *Team Leader Assignment*\n🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}`;
+    message += `🧠 Backend TL: ${tl.backend || 'TBD'}\n💬 Frontend TL: ${tl.frontend || 'TBD'}`;
   }
 
   await replyToSlack('C0929GPUAAZ', message);
 }
 
 // Break Logic
-const breakTracker = {}; // Tracks last break date per user
-const activeBreaks = {}; // Tracks ongoing breaks
-const breakQueue = []; // Tracks queued break requests
+const breakTracker = {};
+const activeBreaks = {};
+const breakQueue = [];
 
 function getNovaDay() {
   const now = new Date();
@@ -144,7 +143,6 @@ app.post('/slack/events', async (req, res) => {
     const userName = `<@${userId}>`;
     const channel = event.channel;
 
-    // Only allow Thanos (you) to test for now
     if (userId === 'U092ABHUREW') {
       await handleBreakRequest(userId, userName, channel);
     } else {
@@ -155,7 +153,7 @@ app.post('/slack/events', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Auto Scheduler (24/7)
+// Auto Scheduler
 const shiftTimes = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
 setInterval(async () => {
   const now = new Date();
