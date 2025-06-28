@@ -23,7 +23,7 @@ const TEAM_LEADERS = [
   "Krissy Matias", "Márcio Rodrigues"
 ];
 
-const MANAGER_IDS = ["U092ABHUREW"]; // Add more manager IDs if needed
+const MANAGER_IDS = ["U092ABHUREW"];
 
 async function replyToSlack(channel, message) {
   await axios.post("https://slack.com/api/chat.postMessage", {
@@ -67,6 +67,7 @@ async function handleBreak(userId, userName, channel) {
   activeBreaks[userId] = end;
   breakHistory[userId] = today;
   replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 min!`);
+
   setTimeout(() => {
     delete activeBreaks[userId];
     replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
@@ -106,7 +107,32 @@ app.post("/slack/commands", async (req, res) => {
     return res.send();
   }
 
+  if (command === "/nova_break") {
+    await handleBreak(user_id, req.body.user_name, channel_id);
+    return res.send();
+  }
+
   res.send("Unknown command");
+});
+
+app.post("/slack/interactivity", async (req, res) => {
+  const payload = JSON.parse(req.body.payload);
+
+  if (payload.type === "view_submission") {
+    const values = payload.view.state.values;
+    const name = values.name_block.name_select.selected_option.value;
+    const date = values.date_block.date_select.selected_date;
+    const time = values.time_block.time_select.selected_option.value;
+    const role = values.role_block.role_select.selected_option.value;
+
+    await pool.query(
+      "INSERT INTO agent_shifts (shift_date, shift_time, role, name, updated_by, reason, created_at) VALUES ($1, $2, $3, $4, 'slack', 'manual update', NOW())",
+      [date, time, role, name]
+    );
+
+    return res.send({ response_action: "clear" });
+  }
+  res.send();
 });
 
 function buildAgentModal() {
@@ -134,10 +160,7 @@ function buildAgentModal() {
         type: "input",
         block_id: "date_block",
         label: { type: "plain_text", text: "Select date" },
-        element: {
-          type: "datepicker",
-          action_id: "date_select"
-        }
+        element: { type: "datepicker", action_id: "date_select" }
       },
       {
         type: "input",
@@ -194,10 +217,7 @@ function buildTLModal() {
         type: "input",
         block_id: "date_block",
         label: { type: "plain_text", text: "Select date" },
-        element: {
-          type: "datepicker",
-          action_id: "date_select"
-        }
+        element: { type: "datepicker", action_id: "date_select" }
       },
       {
         type: "input",
