@@ -10,11 +10,11 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Utility: Post to Slack
-async function replyToSlack(channel, message) {
+// Utility: Post message to Slack
+async function replyToSlack(channel, text) {
   await axios.post('https://slack.com/api/chat.postMessage', {
     channel,
-    text: message,
+    text,
   }, {
     headers: {
       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
@@ -23,118 +23,134 @@ async function replyToSlack(channel, message) {
   });
 }
 
-// Break logic
-const activeBreaks = {};
-const breakHistory = {};
-const breakQueue = [];
-
-function getNovaDay() {
-  const now = new Date();
-  const local = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-  if (local.getHours() < 2) local.setDate(local.getDate() - 1);
-  return local.toISOString().split('T')[0];
+// Utility: Open modal
+async function openModal(trigger_id) {
+  await axios.post('https://slack.com/api/views.open', {
+    trigger_id,
+    view: {
+      type: 'modal',
+      title: { type: 'plain_text', text: 'Update Shift' },
+      callback_id: 'update_shift_modal',
+      submit: { type: 'plain_text', text: 'Submit' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'name_block',
+          label: { type: 'plain_text', text: 'Select Name' },
+          element: {
+            type: 'static_select',
+            action_id: 'name_action',
+            options: [
+              { text: { type: 'plain_text', text: 'Stelios Georgiou' }, value: 'Stelios Georgiou' },
+              { text: { type: 'plain_text', text: 'Dimitris Michoudis' }, value: 'Dimitris Michoudis' },
+              { text: { type: 'plain_text', text: 'Aggelos Diogenis P.' }, value: 'Aggelos Diogenis P.' },
+              { text: { type: 'plain_text', text: 'Christina Z.' }, value: 'Christina Z.' },
+              { text: { type: 'plain_text', text: 'Ella Pineda' }, value: 'Ella Pineda' },
+              { text: { type: 'plain_text', text: 'Jean Zamora' }, value: 'Jean Zamora' },
+              { text: { type: 'plain_text', text: 'Zoe Lefa' }, value: 'Zoe Lefa' },
+              // Add TLs too as needed
+            ],
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'action_block',
+          label: { type: 'plain_text', text: 'Select Action' },
+          element: {
+            type: 'static_select',
+            action_id: 'action_action',
+            options: [
+              { text: { type: 'plain_text', text: 'Add Shift' }, value: 'add' },
+              { text: { type: 'plain_text', text: 'Remove Shift' }, value: 'remove' },
+              { text: { type: 'plain_text', text: 'Swap Shift' }, value: 'swap' },
+            ],
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'date_block',
+          label: { type: 'plain_text', text: 'Shift Date' },
+          element: { type: 'datepicker', action_id: 'date_action' },
+        },
+        {
+          type: 'input',
+          block_id: 'time_block',
+          label: { type: 'plain_text', text: 'Shift Time (e.g. 10:00-14:00)' },
+          element: { type: 'plain_text_input', action_id: 'time_action' },
+        },
+        {
+          type: 'input',
+          block_id: 'role_block',
+          label: { type: 'plain_text', text: 'Role' },
+          element: {
+            type: 'static_select',
+            action_id: 'role_action',
+            options: [
+              { text: { type: 'plain_text', text: 'CHAT' }, value: 'chat' },
+              { text: { type: 'plain_text', text: 'TICKET' }, value: 'ticket' },
+              { text: { type: 'plain_text', text: 'BACKEND' }, value: 'backend' },
+              { text: { type: 'plain_text', text: 'FRONTEND' }, value: 'frontend' },
+            ],
+          },
+        },
+      ],
+    },
+  }, {
+    headers: {
+      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+  });
 }
 
-async function handleBreak(userId, userName, channel) {
-  const today = getNovaDay();
-
-  if (breakHistory[userId] === today) {
-    return replyToSlack(channel, `❌ <@${userId}>, you've already had a break today.`);
-  }
-
-  if (activeBreaks[userId]) {
-    const min = Math.ceil((activeBreaks[userId] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're already on break! ${min} min left.`);
-  }
-
-  if (Object.keys(activeBreaks).length > 0) {
-    breakQueue.push({ userId, userName, channel });
-    const [curr] = Object.keys(activeBreaks);
-    const min = Math.ceil((activeBreaks[curr] - Date.now()) / 60000);
-    return replyToSlack(channel, `⏳ <@${userId}>, you're queued. ${min} min left before your turn.`);
-  }
-
-  const end = Date.now() + 30 * 60000;
-  activeBreaks[userId] = end;
-  breakHistory[userId] = today;
-  replyToSlack(channel, `✅ Break granted to <@${userId}>! Enjoy 30 min!`);
-
-  setTimeout(() => {
-    delete activeBreaks[userId];
-    replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
-    if (breakQueue.length) {
-      const next = breakQueue.shift();
-      handleBreak(next.userId, next.userName, next.channel);
-    }
-  }, 30 * 60000);
-}
-
-// Slack events
-app.post('/slack/events', async (req, res) => {
-  const { type, event } = req.body;
-  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
-
-  if (event && event.type === 'app_mention' && /break/i.test(event.text)) {
-    await handleBreak(event.user, `<@${event.user}>`, event.channel);
-  }
-
-  res.sendStatus(200);
-});
-
-// Slack commands
+// Slack command for update shift
 app.post('/slack/commands', async (req, res) => {
-  const { command, channel_id } = req.body;
-
-  if (command === '/nova_schedule_today') {
-    await postShiftMessageToday(channel_id);
-    return res.send();
-  }
-
-  if (command === '/nova_schedule_week') {
-    await postShiftMessageWeek(channel_id);
-    return res.send();
-  }
-
-  if (command === '/nova_help') {
-    await replyToSlack(channel_id, `📝 Nova Help:\n/nova_schedule_today - Show today’s schedule\n/nova_schedule_week - Show this week’s schedule\n/nova_update_shift - Update shift dynamically`);
-    return res.send();
-  }
-
+  const { command, trigger_id } = req.body;
   if (command === '/nova_update_shift') {
-    await replyToSlack(channel_id, `⚡ Shift update functionality coming soon!`);
+    await openModal(trigger_id);
     return res.send();
   }
-
   res.send('Unknown command');
 });
 
-async function postShiftMessageToday(channel) {
-  const today = getNovaDay();
-  const result = await pool.query('SELECT * FROM agent_shifts WHERE shift_date = $1 ORDER BY shift_time, role', [today]);
+// Slack interactivity endpoint
+app.post('/slack/interactivity', async (req, res) => {
+  const payload = JSON.parse(req.body.payload);
+  if (payload.type === 'view_submission' && payload.view.callback_id === 'update_shift_modal') {
+    const vals = payload.view.state.values;
+    const name = vals.name_block.name_action.selected_option.value;
+    const action = vals.action_block.action_action.selected_option.value;
+    const date = vals.date_block.date_action.selected_date;
+    const time = vals.time_block.time_action.value;
+    const role = vals.role_block.role_action.selected_option.value;
 
-  let msg = `:date: *Today’s Schedule (${today})*\n`;
-  if (result.rows.length === 0) {
-    msg += '_No shifts scheduled for today._';
-  } else {
-    result.rows.forEach(r => {
-      msg += `${r.role.toUpperCase()} | ${r.name} | ${r.shift_time} - ${r.shift_end_time}\n`;
-    });
+    try {
+      if (action === 'add') {
+        await pool.query(
+          `INSERT INTO agent_shifts (shift_date, shift_time, role, name, updated_by, reason, created_at)
+           VALUES ($1, $2, $3, $4, 'slack', 'manual update', NOW())`,
+          [date, time, role, name]
+        );
+      } else if (action === 'remove') {
+        await pool.query(
+          `DELETE FROM agent_shifts WHERE shift_date = $1 AND shift_time = $2 AND role = $3 AND name = $4`,
+          [date, time, role, name]
+        );
+      }
+      // Swap logic can be added similarly
+      await replyToSlack(payload.user.id, `✅ Shift ${action}ed: ${name} | ${role.toUpperCase()} | ${date} | ${time}`);
+    } catch (err) {
+      console.error(err);
+      await replyToSlack(payload.user.id, `❌ Failed to ${action} shift.`);
+    }
+
+    return res.send({ response_action: 'clear' });
   }
+  res.send();
+});
 
-  await replyToSlack(channel, msg);
-}
-
-async function postShiftMessageWeek(channel) {
-  const result = await pool.query('SELECT * FROM agent_shifts ORDER BY shift_date, shift_time, role');
-
-  let msg = `:date: *Weekly Schedule*\n`;
-  result.rows.forEach(r => {
-    msg += `${r.shift_date} | ${r.shift_time} - ${r.shift_end_time} | ${r.role.toUpperCase()} | ${r.name}\n`;
-  });
-
-  await replyToSlack(channel, msg);
-}
-
-app.get('/', (req, res) => res.send('Nova is live!'));
+// Health check
+app.get('/', (req, res) => res.send('Nova is live with modals!'));
 
 app.listen(PORT, () => console.log(`✅ Nova listening on ${PORT}`));
