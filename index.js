@@ -19,13 +19,12 @@ const AGENTS = [
 ];
 
 const TEAM_LEADERS = [
-  "Barbara de Melo Lima", "Carmela Sedanto", "George Marios Alexakis",
-  "Giannis Kiriakou", "Krissy Matias", "Márcio Rodrigues"
+  "Barbara de Melo Lima", "Carmela Sedanto", "George Marios Alexakis", "Giannis Kiriakou",
+  "Krissy Matias", "Márcio Rodrigues"
 ];
 
-const MANAGER_IDS = ["U092ABHUREW"]; // Add manager/team leader Slack IDs here if needed
+const MANAGER_IDS = ["U092ABHUREW"];
 
-// Utility: post to Slack
 async function replyToSlack(channel, message) {
   await axios.post("https://slack.com/api/chat.postMessage", {
     channel,
@@ -73,85 +72,60 @@ async function handleBreak(userId, userName, channel) {
   setTimeout(() => {
     delete activeBreaks[userId];
     replyToSlack(channel, `🕒 <@${userId}>, your break is over!`);
-    if (breakQueue.length > 0) {
+    if (breakQueue.length) {
       const next = breakQueue.shift();
       handleBreak(next.userId, next.userName, next.channel);
     }
   }, 30 * 60000);
 }
 
-// Slack commands
 app.post("/slack/commands", async (req, res) => {
-  const { command, channel_id, user_id } = req.body;
+  const { command, trigger_id } = req.body;
 
-  if (command === "/nova_help") {
-    await replyToSlack(channel_id, `📝 Nova Help:
-• /nova_schedule_today — show today’s schedule
-• /nova_schedule_week — show this week’s schedule
-• /nova_update_shift — update shift dynamically`);
+  if (command === "/nova_update_agent_shift") {
+    await axios.post("https://slack.com/api/views.open", {
+      trigger_id,
+      view: buildAgentModal(),
+    }, slackHeaders());
     return res.send();
   }
 
-  if (command === "/nova_update_shift") {
+  if (command === "/nova_update_tl_shift") {
     await axios.post("https://slack.com/api/views.open", {
-      trigger_id: req.body.trigger_id,
-      view: buildUpdateModal(user_id),
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
+      trigger_id,
+      view: buildTLModal(),
+    }, slackHeaders());
     return res.send();
   }
 
   res.send("Unknown command");
 });
 
-// Build update modal
-function buildUpdateModal(userId) {
-  const isManager = MANAGER_IDS.includes(userId);
+function slackHeaders() {
+  return {
+    headers: {
+      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json",
+    }
+  };
+}
 
+function buildAgentModal() {
   return {
     type: "modal",
-    callback_id: "update_shift_modal",
-    title: { type: "plain_text", text: "Update shift" },
+    callback_id: "agent_shift_modal",
+    title: { type: "plain_text", text: "Update Agent Shift" },
     submit: { type: "plain_text", text: "Submit" },
     close: { type: "plain_text", text: "Cancel" },
     blocks: [
-      ...(isManager ? [{
-        type: "input",
-        block_id: "type_block",
-        label: { type: "plain_text", text: "Select type" },
-        element: {
-          type: "static_select",
-          action_id: "type_select",
-          options: [
-            { text: { type: "plain_text", text: "Agent" }, value: "agent" },
-            { text: { type: "plain_text", text: "Team leader" }, value: "team_leader" }
-          ]
-        }
-      }] : []),
       {
         type: "input",
         block_id: "name_block",
-        label: { type: "plain_text", text: "Select name" },
+        label: { type: "plain_text", text: "Select agent" },
         element: {
           type: "static_select",
           action_id: "name_select",
-          options: (isManager ? AGENTS.concat(TEAM_LEADERS) : AGENTS).map(name => ({
-            text: { type: "plain_text", text: name },
-            value: name
-          }))
-        }
-      },
-      {
-        type: "input",
-        block_id: "date_block",
-        label: { type: "plain_text", text: "Select date" },
-        element: {
-          type: "datepicker",
-          action_id: "date_select"
+          options: AGENTS.map(name => ({ text: { type: "plain_text", text: name }, value: name }))
         }
       },
       {
@@ -161,21 +135,9 @@ function buildUpdateModal(userId) {
         element: {
           type: "static_select",
           action_id: "time_select",
-          options: (isManager ? [
-            { text: { type: "plain_text", text: "00:00-04:00" }, value: "00:00-04:00" },
-            { text: { type: "plain_text", text: "04:00-08:00" }, value: "04:00-08:00" },
-            { text: { type: "plain_text", text: "08:00-12:00" }, value: "08:00-12:00" },
-            { text: { type: "plain_text", text: "12:00-16:00" }, value: "12:00-16:00" },
-            { text: { type: "plain_text", text: "16:00-20:00" }, value: "16:00-20:00" },
-            { text: { type: "plain_text", text: "20:00-00:00" }, value: "20:00-00:00" }
-          ] : [
-            { text: { type: "plain_text", text: "10:00-14:00" }, value: "10:00-14:00" },
-            { text: { type: "plain_text", text: "14:00-18:00" }, value: "14:00-18:00" },
-            { text: { type: "plain_text", text: "18:00-22:00" }, value: "18:00-22:00" },
-            { text: { type: "plain_text", text: "22:00-02:00" }, value: "22:00-02:00" },
-            { text: { type: "plain_text", text: "02:00-06:00" }, value: "02:00-06:00" },
-            { text: { type: "plain_text", text: "06:00-10:00" }, value: "06:00-10:00" }
-          ])
+          options: [
+            "10:00-14:00", "14:00-18:00", "18:00-22:00", "22:00-02:00", "02:00-06:00", "06:00-10:00"
+          ].map(t => ({ text: { type: "plain_text", text: t }, value: t }))
         }
       },
       {
@@ -185,13 +147,57 @@ function buildUpdateModal(userId) {
         element: {
           type: "static_select",
           action_id: "role_select",
-          options: (isManager ? [
-            { text: { type: "plain_text", text: "Backend" }, value: "backend" },
-            { text: { type: "plain_text", text: "Frontend" }, value: "frontend" }
-          ] : [
+          options: [
             { text: { type: "plain_text", text: "Chat" }, value: "chat" },
             { text: { type: "plain_text", text: "Ticket" }, value: "ticket" }
-          ])
+          ]
+        }
+      }
+    ]
+  };
+}
+
+function buildTLModal() {
+  return {
+    type: "modal",
+    callback_id: "tl_shift_modal",
+    title: { type: "plain_text", text: "Update TL Shift" },
+    submit: { type: "plain_text", text: "Submit" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      {
+        type: "input",
+        block_id: "name_block",
+        label: { type: "plain_text", text: "Select team leader" },
+        element: {
+          type: "static_select",
+          action_id: "name_select",
+          options: TEAM_LEADERS.map(name => ({ text: { type: "plain_text", text: name }, value: name }))
+        }
+      },
+      {
+        type: "input",
+        block_id: "time_block",
+        label: { type: "plain_text", text: "Select time frame" },
+        element: {
+          type: "static_select",
+          action_id: "time_select",
+          options: [
+            "00:00-04:00", "04:00-08:00", "08:00-12:00", "12:00-16:00", "16:00-20:00", "20:00-00:00"
+          ].map(t => ({ text: { type: "plain_text", text: t }, value: t }))
+        }
+      },
+      {
+        type: "input",
+        block_id: "role_block",
+        label: { type: "plain_text", text: "Select role" },
+        element: {
+          type: "static_select",
+          action_id: "role_select",
+          options: [
+            { text: { type: "plain_text", text: "Backend" }, value: "backend" },
+            { text: { type: "plain_text", text: "Frontend" }, value: "frontend" }
+          ]
         }
       }
     ]
